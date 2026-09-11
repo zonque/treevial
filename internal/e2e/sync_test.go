@@ -1,0 +1,395 @@
+package e2e
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/go-git/go-git/v5/plumbing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+
+	"github.com/holoplot/gats"
+	"github.com/holoplot/gats/client"
+	"github.com/holoplot/gats/internal/demo"
+	"github.com/holoplot/gats/internal/gatspb"
+	"github.com/holoplot/gats/receive"
+)
+
+func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if prepared, _ := h.provider.counts("printer-7"); prepared != 0 {
+		t.Fatalf("data was prepared before the client connected")
+	}
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	u := nextUpdate(t, updates)
+
+	if prepared, _ := h.provider.counts("printer-7"); prepared != 1 {
+		t.Errorf("provider prepared data %d times, want once", prepared)
+	}
+	if want := uint32(14); u.ObjectCount != want {
+		t.Errorf("pushed %d objects, want %d", u.ObjectCount, want)
+	}
+
+	leaves, err := u.Graph.Leaves(u.Hash)
+	if err != nil {
+		t.Fatalf("Leaves: %v", err)
+	}
+	if want := demo.LeafCount; len(leaves) != want {
+		t.Fatalf("client reconstructed %d leaves, want %d", len(leaves), want)
+	}
+}
+
+func TestClientIsServedAtItsOwnRef(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	u := nextUpdate(t, updates)
+
+	want := "refs/heads/printer-7/config"
+	if u.Ref != want {
+		t.Errorf("client reports ref %q, want %q", u.Ref, want)
+	}
+	if u.ClientID != "printer-7" {
+		t.Errorf("client reports ID %q, want %q", u.ClientID, "printer-7")
+	}
+
+	clients := h.server.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("got %d clients, want 1", len(clients))
+	}
+	if clients[0].Ref != want {
+		t.Errorf("server publishes at %q, want %q", clients[0].Ref, want)
+	}
+	if clients[0].Ref != gats.RefFor("printer-7") {
+		t.Errorf("server ref %q disagrees with clientref.For", clients[0].Ref)
+	}
+}
+
+func TestEachClientGetsItsOwnData(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, first := h.subscribe(t, ctx, "printer-7")
+	_, second := h.subscribe(t, ctx, "printer-8")
+
+	a := nextUpdate(t, first)
+	b := nextUpdate(t, second)
+
+	if a.Hash == b.Hash {
+		t.Error("both clients were served the same tree")
+	}
+
+	leavesA, err := a.Graph.Leaves(a.Hash)
+	if err != nil {
+		t.Fatalf("Leaves: %v", err)
+	}
+
+	leavesB, err := b.Graph.Leaves(b.Hash)
+	if err != nil {
+		t.Fatalf("Leaves: %v", err)
+	}
+
+	if got, want := string(leavesA["a/leaf-00"]), "leaf-00 printer-7\n"; got != want {
+		t.Errorf("printer-7 leaf: got %q, want %q", got, want)
+	}
+	if got, want := string(leavesB["a/leaf-00"]), "leaf-00 printer-8\n"; got != want {
+		t.Errorf("printer-8 leaf: got %q, want %q", got, want)
+	}
+}
+
+func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	first := nextUpdate(t, updates)
+
+	// The server must know the client is caught up before it can compute a
+	// minimal second push.
+	waitForSync(t, h.server, "printer-7", first.Hash)
+
+	store := h.provider.store(t, "printer-7")
+
+	v2, err := store.ReplaceBlob(first.Hash, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	if err != nil {
+		t.Fatalf("ReplaceBlob: %v", err)
+	}
+	if err := h.server.SetHead("printer-7", v2); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	second := nextUpdate(t, updates)
+
+	if second.Hash != v2 {
+		t.Errorf("second update hash %s, want %s", second.Hash, v2)
+	}
+	// The rewritten blob plus the c, b and root trees on its path.
+	if want := uint32(4); second.ObjectCount != want {
+		t.Errorf("second push carried %d objects, want %d", second.ObjectCount, want)
+	}
+	if second.Previous != first.Hash {
+		t.Errorf("second update reported previous %s, want %s", second.Previous, first.Hash)
+	}
+
+	changes, err := second.Graph.Diff(second.Previous, second.Hash)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Path != "b/c/leaf-07" {
+		t.Fatalf("got changes %v, want only b/c/leaf-07", changes)
+	}
+	if got, want := string(changes[0].Content), "leaf-07 v2\n"; got != want {
+		t.Errorf("changed content: got %q, want %q", got, want)
+	}
+}
+
+func TestServerTracksWhenAClientHasSynced(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	u := nextUpdate(t, updates)
+	waitForSync(t, h.server, "printer-7", u.Hash)
+
+	clients := h.server.Clients()
+	if len(clients) != 1 {
+		t.Fatalf("got %d clients, want 1", len(clients))
+	}
+	if clients[0].Synced != u.Hash {
+		t.Errorf("client synced at %s, want %s", clients[0].Synced, u.Hash)
+	}
+	if clients[0].Head != u.Hash {
+		t.Errorf("client head %s, want %s", clients[0].Head, u.Hash)
+	}
+}
+
+func TestDisconnectReleasesTheClientsResources(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cli, updates := h.subscribe(t, ctx, "printer-7")
+
+	u := nextUpdate(t, updates)
+	waitForSync(t, h.server, "printer-7", u.Hash)
+
+	if _, released := h.provider.counts("printer-7"); released != 0 {
+		t.Fatal("resources were released while the client was still connected")
+	}
+
+	if err := cli.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	eventually(t, "the server to notice the disconnect", func() bool {
+		return len(h.server.Clients()) == 0
+	})
+
+	eventually(t, "the provider to release the client's resources", func() bool {
+		_, released := h.provider.counts("printer-7")
+
+		return released == 1
+	})
+
+	if h.server.Head("printer-7") != plumbing.ZeroHash {
+		t.Error("the disconnected client's ref is still published")
+	}
+}
+
+func TestSetHeadForAnUnknownClientFails(t *testing.T) {
+	h := newHarness(t)
+
+	err := h.server.SetHead("nobody", plumbing.NewHash("1111111111111111111111111111111111111111"))
+	if err == nil {
+		t.Error("SetHead accepted an unknown client")
+	}
+}
+
+func TestClientReconnectingIsPreparedAgain(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cli, updates := h.subscribe(t, ctx, "printer-7")
+	first := nextUpdate(t, updates)
+	waitForSync(t, h.server, "printer-7", first.Hash)
+
+	if err := cli.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	eventually(t, "the server to notice the disconnect", func() bool {
+		return len(h.server.Clients()) == 0
+	})
+
+	// Reconnecting under the same ID gets freshly prepared data, and the
+	// client says what it already holds so the server sends nothing.
+	c2, err := client.Dial(ctx, h.addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c2.Close()
+
+	updates2, err := c2.Resume(ctx, "printer-7", first.Hash, first.Graph)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	second := nextUpdate(t, updates2)
+	if second.ObjectCount != 0 {
+		t.Errorf("server pushed %d objects to an already-synced client, want 0", second.ObjectCount)
+	}
+	if second.Hash != first.Hash {
+		t.Errorf("update hash %s, want %s", second.Hash, first.Hash)
+	}
+
+	if prepared, _ := h.provider.counts("printer-7"); prepared != 2 {
+		t.Errorf("provider prepared data %d times, want twice", prepared)
+	}
+}
+
+func TestSecondConnectionWithTheSameIDIsRejected(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+	nextUpdate(t, updates)
+
+	c2, err := client.Dial(ctx, h.addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c2.Close()
+
+	updates2, err := c2.Subscribe(ctx, "printer-7")
+	if err == nil {
+		err = drainForError(t, c2, updates2)
+	}
+
+	if status.Code(err) != codes.AlreadyExists {
+		t.Errorf("got error %v (code %s), want AlreadyExists", err, status.Code(err))
+	}
+}
+
+func TestClientWithAnUnusableIDIsRejected(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	c, err := client.Dial(ctx, h.addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	updates, err := c.Subscribe(ctx, "../../heads/somebody-else")
+	if err == nil {
+		err = drainForError(t, c, updates)
+	}
+
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	}
+	if prepared, _ := h.provider.counts("../../heads/somebody-else"); prepared != 0 {
+		t.Error("the server prepared data for an unusable client ID")
+	}
+}
+
+func TestStreamWithoutTheIDHeaderIsRejected(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// The generated stub is used directly here, because gatscli always sets
+	// the header.
+	conn, err := grpc.NewClient(h.addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	stream, err := gatspb.NewObjectSyncClient(conn).Sync(ctx)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	register := &gatspb.ClientMsg{Body: &gatspb.ClientMsg_Register{Register: &gatspb.Register{}}}
+	if err := stream.Send(register); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if _, err = stream.Recv(); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	}
+}
+
+func TestSubscribingWithAnUnknownSyncedHashFails(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	c, err := client.Dial(ctx, h.addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	unknown := plumbing.NewHash("1111111111111111111111111111111111111111")
+
+	updates, err := c.Resume(ctx, "printer-7", unknown, receive.NewGraph())
+	if err == nil {
+		err = drainForError(t, c, updates)
+	}
+
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	}
+}
+
+// drainForError waits for a subscription to fail, for the cases where the
+// server's rejection surfaces on the first receive rather than at registration.
+func drainForError(t *testing.T, c *client.Client, updates <-chan client.Update) error {
+	t.Helper()
+
+	select {
+	case u, ok := <-updates:
+		if ok {
+			t.Fatalf("got update %s where an error was expected", u.Hash)
+		}
+
+		return c.Err()
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the server to reject the subscription")
+	}
+
+	return nil
+}

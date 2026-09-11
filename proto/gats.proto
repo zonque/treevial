@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package gats.v1;
+
+option go_package = "github.com/holoplot/gats/internal/gatspb;gatspb";
+
+// ObjectSync carries a reversed-role git object transfer: the client dials and
+// keeps a single long-lived stream open, but it is the server that pushes
+// objects down that stream whenever the ref the client subscribed to moves.
+//
+// The client identifies itself in the "gats-client-id" request header, and that
+// ID alone decides which ref it is served: refs/heads/<client-id>/config. The
+// server prepares that data when the client connects and drops it again when it
+// disconnects, so nothing in the stream itself names a ref.
+service ObjectSync {
+  rpc Sync(stream ClientMsg) returns (stream ServerMsg);
+}
+
+message ClientMsg {
+  oneof body {
+    Register register = 1;
+    Ack ack = 2;
+  }
+}
+
+// Register opens the subscription. "synced" is the hash the client already
+// holds in full, or empty if it holds nothing; the server sends the difference
+// between it and the ref, and knows from it exactly where the client stands.
+// The ref is not named here: it follows from the client ID in the header.
+message Register {
+  string synced = 1;
+}
+
+// Ack tells the server the client has fully interpreted an update and is now at
+// "hash". Until it arrives, the server considers the client unsynced.
+message Ack {
+  string hash = 1;
+}
+
+message ServerMsg {
+  oneof body {
+    UpdateBegin begin = 1;
+    PackChunk chunk = 2;
+    UpdateEnd end = 3;
+  }
+}
+
+// UpdateBegin opens an update. A count of zero means the client is already
+// current and no pack follows.
+message UpdateBegin {
+  string hash = 1;
+  uint32 object_count = 2;
+}
+
+message PackChunk {
+  bytes data = 1;
+}
+
+// UpdateEnd closes an update; the pack is complete and can be acknowledged.
+message UpdateEnd {}

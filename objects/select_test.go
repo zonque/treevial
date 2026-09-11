@@ -1,0 +1,93 @@
+package objects_test
+
+import (
+	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing"
+
+	"github.com/holoplot/gats/internal/demo"
+	"github.com/holoplot/gats/objects"
+)
+
+func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {
+	s := objects.NewStore()
+
+	root, err := demo.BuildTree(s, "v1")
+	if err != nil {
+		t.Fatalf("BuildTree: %v", err)
+	}
+
+	got, err := s.SelectSince(plumbing.ZeroHash, root)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	// 10 blobs plus the root, a, b and c trees.
+	if want := 14; len(got) != want {
+		t.Errorf("got %d objects, want %d", len(got), want)
+	}
+}
+
+func TestSelectSinceTheSameTreeReturnsNothing(t *testing.T) {
+	s := objects.NewStore()
+
+	root, err := demo.BuildTree(s, "v1")
+	if err != nil {
+		t.Fatalf("BuildTree: %v", err)
+	}
+
+	got, err := s.SelectSince(root, root)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	if len(got) != 0 {
+		t.Errorf("got %d objects, want none for an already-synced client", len(got))
+	}
+}
+
+func TestSelectSinceReturnsOnlyThePathToAChangedLeaf(t *testing.T) {
+	s := objects.NewStore()
+
+	v1, err := demo.BuildTree(s, "v1")
+	if err != nil {
+		t.Fatalf("BuildTree v1: %v", err)
+	}
+
+	v2, err := s.ReplaceBlob(v1, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	if err != nil {
+		t.Fatalf("ReplaceBlob: %v", err)
+	}
+
+	got, err := s.SelectSince(v1, v2)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	// The rewritten blob plus the c, b and root trees on its path; every
+	// subtree the change did not touch is pruned.
+	if want := 4; len(got) != want {
+		t.Errorf("got %d objects, want %d", len(got), want)
+	}
+
+	for _, h := range got {
+		if h == v1 {
+			t.Error("SelectSince returned the tree the client already had")
+		}
+	}
+}
+
+func TestSelectSinceFailsWhenTheClientClaimsAnUnknownState(t *testing.T) {
+	s := objects.NewStore()
+
+	root, err := demo.BuildTree(s, "v1")
+	if err != nil {
+		t.Fatalf("BuildTree: %v", err)
+	}
+
+	unknown := plumbing.NewHash("1111111111111111111111111111111111111111")
+
+	if _, err := s.SelectSince(unknown, root); err == nil {
+		t.Error("SelectSince accepted a synced hash the store does not have")
+	}
+}
