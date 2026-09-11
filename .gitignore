@@ -1,0 +1,17 @@
+# Binaries from a single-package `go build`, which land in the working
+# directory named after their package. (`go build ./...` writes nothing, and in
+# examples/consumer the package directories already occupy those names.)
+/treevial-client
+/treevial-server
+
+# Test binaries from `go test -c`.
+*.test
+
+# Coverage and profile output.
+*.out
+*.prof
+
+# A local go.work linking this module to examples/consumer is a convenience,
+# not part of the repository: that module carries its own replace directive.
+go.work
+go.work.sum
