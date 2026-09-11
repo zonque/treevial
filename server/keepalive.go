@@ -6,7 +6,7 @@ import (
 )
 
 // forever is the longest duration gRPC will accept. It stands in for "never"
-// wherever a keepalive setting would otherwise close a connection that gats
+// wherever a keepalive setting would otherwise close a connection that treevial
 // needs to stay open indefinitely.
 const forever = time.Duration(math.MaxInt64)
 

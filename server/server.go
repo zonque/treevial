@@ -1,11 +1,12 @@
-// Package server is the pushing side of gats. It listens for clients, but the
-// direction of the object flow is reversed from git's usual arrangement: once a
-// client has identified itself, the server prepares that client's objects and
-// sends them down the long-lived stream on its own initiative, whenever the
-// client's ref moves.
+// Package server is the pushing side of treevial. It listens for clients, but
+// the direction of the object flow is reversed from git's usual arrangement:
+// once a client has identified itself, the server prepares that client's
+// objects and sends them down the long-lived stream on its own initiative,
+// whenever the client's ref moves.
 //
 // A server repository depends on this package and on
-// [github.com/holoplot/gats/objects]; it does not need the client side at all.
+// [github.com/holoplot/treevial/objects]; it does not need the client side at
+// all.
 package server
 
 import (
@@ -23,9 +24,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/internal/gatspb"
-	"github.com/holoplot/gats/objects"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/internal/treevialpb"
+	"github.com/holoplot/treevial/objects"
 )
 
 // chunkSize caps how much pack data travels in one PackChunk message.
@@ -124,7 +125,7 @@ func New(provider Provider) *Server {
 		clients:  map[string]*client{},
 	}
 
-	// A gats connection carries pushes the server initiates, so it must
+	// A treevial connection carries pushes the server initiates, so it must
 	// outlive any amount of quiet. Every mechanism gRPC has for closing a
 	// connection on its own is disabled here.
 	s.grpc = grpc.NewServer(
@@ -149,7 +150,7 @@ func New(provider Provider) *Server {
 			PermitWithoutStream: true,
 		}),
 	)
-	gatspb.RegisterObjectSyncServer(s.grpc, &syncService{server: s})
+	treevialpb.RegisterObjectSyncServer(s.grpc, &syncService{server: s})
 
 	return s
 }
@@ -158,13 +159,13 @@ func New(provider Provider) *Server {
 // that the wire types, which are an implementation detail, stay out of the
 // Server's exported API.
 type syncService struct {
-	gatspb.UnimplementedObjectSyncServer
+	treevialpb.UnimplementedObjectSyncServer
 
 	server *Server
 }
 
 // Sync implements the generated ObjectSyncServer interface.
-func (s *syncService) Sync(stream gatspb.ObjectSync_SyncServer) error {
+func (s *syncService) Sync(stream treevialpb.ObjectSync_SyncServer) error {
 	return s.server.sync(stream)
 }
 
@@ -241,7 +242,7 @@ func (s *Server) Clients() []ClientState {
 // client is missing, and then stays put, pushing again every time the ref
 // moves. When it returns, the client has disconnected and its resources are
 // released.
-func (s *Server) sync(stream gatspb.ObjectSync_SyncServer) error {
+func (s *Server) sync(stream treevialpb.ObjectSync_SyncServer) error {
 	clientID, err := clientIDFrom(stream.Context())
 	if err != nil {
 		return err
@@ -258,7 +259,7 @@ func (s *Server) sync(stream gatspb.ObjectSync_SyncServer) error {
 	}
 	defer s.disconnect(c)
 
-	acks := make(chan *gatspb.Ack, 1)
+	acks := make(chan *treevialpb.Ack, 1)
 	recvErr := make(chan error, 1)
 
 	go func() { recvErr <- readAcks(stream, acks) }()
@@ -311,7 +312,7 @@ func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error)
 
 	c := &client{
 		id:     clientID,
-		ref:    gats.RefFor(clientID),
+		ref:    treevial.RefFor(clientID),
 		store:  store,
 		notify: make(chan plumbing.Hash, 1),
 		head:   head,
@@ -341,10 +342,10 @@ func (s *Server) disconnect(c *client) {
 // awaitAck blocks until the client confirms it has interpreted the update, so
 // the server's idea of the client's state never runs ahead of reality.
 func (s *Server) awaitAck(
-	stream gatspb.ObjectSync_SyncServer,
+	stream treevialpb.ObjectSync_SyncServer,
 	c *client,
 	hash plumbing.Hash,
-	acks <-chan *gatspb.Ack,
+	acks <-chan *treevialpb.Ack,
 	recvErr <-chan error,
 ) error {
 	for {
@@ -374,16 +375,16 @@ func clientIDFrom(ctx context.Context) (string, error) {
 		return "", status.Errorf(codes.InvalidArgument, "request carries no metadata")
 	}
 
-	values := md.Get(gats.IDHeader)
+	values := md.Get(treevial.IDHeader)
 	if len(values) == 0 {
-		return "", status.Errorf(codes.InvalidArgument, "request has no %s header", gats.IDHeader)
+		return "", status.Errorf(codes.InvalidArgument, "request has no %s header", treevial.IDHeader)
 	}
 	if len(values) > 1 {
-		return "", status.Errorf(codes.InvalidArgument, "request has %d %s headers", len(values), gats.IDHeader)
+		return "", status.Errorf(codes.InvalidArgument, "request has %d %s headers", len(values), treevial.IDHeader)
 	}
 
 	clientID := values[0]
-	if err := gats.ValidateID(clientID); err != nil {
+	if err := treevial.ValidateID(clientID); err != nil {
 		return "", status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
@@ -392,7 +393,7 @@ func clientIDFrom(ctx context.Context) (string, error) {
 
 // readRegistration reads the opening message of the stream, in which the client
 // states what it already holds.
-func readRegistration(stream gatspb.ObjectSync_SyncServer) (plumbing.Hash, error) {
+func readRegistration(stream treevialpb.ObjectSync_SyncServer) (plumbing.Hash, error) {
 	msg, err := stream.Recv()
 	if err != nil {
 		return plumbing.ZeroHash, err
@@ -414,13 +415,13 @@ func readRegistration(stream gatspb.ObjectSync_SyncServer) (plumbing.Hash, error
 }
 
 // push sends the client the objects between the tree it holds and hash.
-func (s *Server) push(stream gatspb.ObjectSync_SyncServer, c *client, hash plumbing.Hash) error {
+func (s *Server) push(stream treevialpb.ObjectSync_SyncServer, c *client, hash plumbing.Hash) error {
 	missing, err := c.store.SelectSince(c.held(), hash)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "objects since %s: %v", c.held(), err)
 	}
 
-	begin := &gatspb.ServerMsg{Body: &gatspb.ServerMsg_Begin{Begin: &gatspb.UpdateBegin{
+	begin := &treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_Begin{Begin: &treevialpb.UpdateBegin{
 		Hash:        hash.String(),
 		ObjectCount: uint32(len(missing)),
 	}}}
@@ -439,14 +440,14 @@ func (s *Server) push(stream gatspb.ObjectSync_SyncServer, c *client, hash plumb
 		}
 	}
 
-	end := &gatspb.ServerMsg{Body: &gatspb.ServerMsg_End{End: &gatspb.UpdateEnd{}}}
+	end := &treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_End{End: &treevialpb.UpdateEnd{}}}
 
 	return stream.Send(end)
 }
 
 // readAcks drains the client's half of the stream. Registration aside, the only
 // thing a client sends is an acknowledgement.
-func readAcks(stream gatspb.ObjectSync_SyncServer, acks chan<- *gatspb.Ack) error {
+func readAcks(stream treevialpb.ObjectSync_SyncServer, acks chan<- *treevialpb.Ack) error {
 	for {
 		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -471,7 +472,7 @@ func readAcks(stream gatspb.ObjectSync_SyncServer, acks chan<- *gatspb.Ack) erro
 // pack streams out as it is produced instead of being assembled first and sent
 // in one lump.
 type chunkWriter struct {
-	stream gatspb.ObjectSync_SyncServer
+	stream treevialpb.ObjectSync_SyncServer
 	buf    []byte
 }
 
@@ -500,7 +501,7 @@ func (w *chunkWriter) send(b []byte) error {
 		return nil
 	}
 
-	return w.stream.Send(&gatspb.ServerMsg{Body: &gatspb.ServerMsg_Chunk{
-		Chunk: &gatspb.PackChunk{Data: b},
+	return w.stream.Send(&treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_Chunk{
+		Chunk: &treevialpb.PackChunk{Data: b},
 	}})
 }

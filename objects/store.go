@@ -1,6 +1,6 @@
-// Package objects holds the git object model side of gats: an in-memory object
-// store, the object-set arithmetic that turns a client's "have" set into the
-// objects it still needs, and packfile encoding. Nothing here touches the
+// Package objects holds the git object model side of treevial: an in-memory
+// object store, the object-set arithmetic that turns a client's "have" set into
+// the objects it still needs, and packfile encoding. Nothing here touches the
 // filesystem.
 package objects
 

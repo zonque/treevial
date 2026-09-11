@@ -1,7 +1,7 @@
-// Command gats-client dials a gats server, registers under its own ID, and
-// then waits. Everything it prints is reconstructed from objects interpreted
-// as they arrived on the wire; no file is ever written and no repository
-// exists.
+// Command treevial-client dials a treevial server, registers under its own ID,
+// and then waits. Everything it prints is reconstructed from objects
+// interpreted as they arrived on the wire; no file is ever written and no
+// repository exists.
 //
 // The configuration it decodes into is the same type the server walks: both
 // sides share one baseline struct, so the paths on the wire and the fields in
@@ -19,15 +19,15 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/client"
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/receive"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/client"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/receive"
+	"github.com/holoplot/treevial/structtree"
 )
 
 func main() {
-	addr := flag.String("server", "127.0.0.1:9418", "address of the gats server")
+	addr := flag.String("server", "127.0.0.1:9418", "address of the treevial server")
 	id := flag.String("id", "", "client ID; decides which ref the server serves (required)")
 	flag.Parse()
 
@@ -50,7 +50,7 @@ func run(addr, clientID string) error {
 	}
 	defer cli.Close()
 
-	log.Printf("subscribing as %q to %s, expecting %s", clientID, addr, gats.RefFor(clientID))
+	log.Printf("subscribing as %q to %s, expecting %s", clientID, addr, treevial.RefFor(clientID))
 
 	updates, err := cli.Subscribe(ctx, clientID)
 	if err != nil {

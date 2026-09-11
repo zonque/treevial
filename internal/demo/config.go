@@ -1,4 +1,4 @@
-// Package demo holds the example value that the gats example programs
+// Package demo holds the example value that the treevial example programs
 // synchronise: a deeply nested Go struct, mapped onto a git tree by
 // structtree. It is not part of the library's API.
 package demo
@@ -10,8 +10,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/structtree"
 )
 
 // LeafCount is the number of blobs Example produces. Secondary is nil, so it

@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/treevial/receive"
 )
 
 // line matches one git ls-tree style row: mode, type, hash, tab, path.

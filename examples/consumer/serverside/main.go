@@ -1,5 +1,5 @@
-// Command serverside is a minimal gats server living in a module of its own.
-// It imports the server side, the object store and the struct walker, and
+// Command serverside is a minimal treevial server living in a module of its
+// own. It imports the server side, the object store and the struct walker, and
 // never mentions the client package.
 package main
 
@@ -13,12 +13,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/server"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/server"
+	"github.com/holoplot/treevial/structtree"
 
-	"github.com/holoplot/gats-consumer-example/settings"
+	"github.com/holoplot/treevial-consumer-example/settings"
 )
 
 // provider hands each client settings of its own, built when it connects and
@@ -47,7 +47,7 @@ func (p *provider) Prepare(clientID string) (*objects.Store, plumbing.Hash, erro
 	p.held[clientID] = s
 	p.mu.Unlock()
 
-	log.Printf("prepared %s -> %s", gats.RefFor(clientID), root)
+	log.Printf("prepared %s -> %s", treevial.RefFor(clientID), root)
 
 	return store, root, nil
 }

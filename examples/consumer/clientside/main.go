@@ -1,6 +1,6 @@
-// Command clientside is a minimal gats client living in a module of its own.
-// It imports the client side and nothing else: no server package, no object
-// store.
+// Command clientside is a minimal treevial client living in a module of its
+// own. It imports the client side and nothing else: no server package, no
+// object store.
 //
 // It decodes into the same settings.Settings the server walked — the two
 // sides share that one baseline struct, and nothing else about the wire
@@ -15,19 +15,19 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/client"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/client"
+	"github.com/holoplot/treevial/structtree"
 
-	"github.com/holoplot/gats-consumer-example/settings"
+	"github.com/holoplot/treevial-consumer-example/settings"
 )
 
 func main() {
-	addr := flag.String("server", "127.0.0.1:9418", "address of the gats server")
+	addr := flag.String("server", "127.0.0.1:9418", "address of the treevial server")
 	id := flag.String("id", "", "client ID (required)")
 	flag.Parse()
 
-	if err := gats.ValidateID(*id); err != nil {
+	if err := treevial.ValidateID(*id); err != nil {
 		log.Fatal(err)
 	}
 
@@ -40,7 +40,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	log.Printf("subscribing as %q, expecting %s", *id, gats.RefFor(*id))
+	log.Printf("subscribing as %q, expecting %s", *id, treevial.RefFor(*id))
 
 	updates, err := conn.Subscribe(ctx, *id)
 	if err != nil {

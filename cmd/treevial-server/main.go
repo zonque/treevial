@@ -1,10 +1,11 @@
-// Command gats-server synchronises a deeply nested Go struct to each client.
-// A client identifies itself in the gats-client-id request header; the server
-// builds that client's configuration on connect, walks it with structtree into
-// a git tree published at refs/heads/<client-id>/config, and pushes it down the
-// stream. A few seconds after a client has synced it changes one deeply nested
-// field and pushes again, which is where the long-lived connection earns its
-// keep: the second transfer costs four objects, not sixteen.
+// Command treevial-server synchronises a deeply nested Go struct to each
+// client. A client identifies itself in the treevial-client-id request header;
+// the server builds that client's configuration on connect, walks it with
+// structtree into a git tree published at refs/heads/<client-id>/config, and
+// pushes it down the stream. A few seconds after a client has synced it
+// changes one deeply nested field and pushes again, which is where the
+// long-lived connection earns its keep: the second transfer costs four
+// objects, not sixteen.
 package main
 
 import (
@@ -19,8 +20,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/server"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/server"
 )
 
 func main() {
@@ -90,7 +91,7 @@ func mutateOnce(
 		return
 	}
 
-	log.Printf("[%s] moving %s -> %s and pushing", clientID, gats.RefFor(clientID), next)
+	log.Printf("[%s] moving %s -> %s and pushing", clientID, treevial.RefFor(clientID), next)
 
 	if err := srv.SetHead(clientID, next); err != nil {
 		log.Printf("[%s] set head: %v", clientID, err)

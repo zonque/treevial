@@ -5,8 +5,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/objects"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/objects"
 )
 
 func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {

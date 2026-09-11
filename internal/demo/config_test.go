@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/structtree"
 )
 
 func TestExampleHasTenLeavesMirroringTheStruct(t *testing.T) {

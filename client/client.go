@@ -1,11 +1,12 @@
-// Package client is the receiving side of gats. It dials the server and keeps
-// one stream open for the lifetime of the process, but never asks for
+// Package client is the receiving side of treevial. It dials the server and
+// keeps one stream open for the lifetime of the process, but never asks for
 // anything: it identifies itself in the request header and then simply
 // interprets whatever the server pushes, on the fly, without writing a byte to
 // disk. The ref it is served follows from its own ID.
 //
 // A client repository depends on this package and on
-// [github.com/holoplot/gats/receive]; it does not need the server side at all.
+// [github.com/holoplot/treevial/receive]; it does not need the server side at
+// all.
 package client
 
 import (
@@ -24,9 +25,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/internal/gatspb"
-	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/internal/treevialpb"
+	"github.com/holoplot/treevial/receive"
 )
 
 // Update reports one completed push: the ref that moved, the object it now
@@ -46,7 +47,7 @@ type Update struct {
 	Graph       *receive.Graph
 }
 
-// Client is a connection to a gats server.
+// Client is a connection to a treevial server.
 type Client struct {
 	conn *grpc.ClientConn
 
@@ -54,9 +55,9 @@ type Client struct {
 	err error
 }
 
-// Dial connects to a gats server. The connection is built to outlive any amount
-// of idleness: the server needs it available to push at a moment of its own
-// choosing, so nothing here may tear it down.
+// Dial connects to a treevial server. The connection is built to outlive any
+// amount of idleness: the server needs it available to push at a moment of its
+// own choosing, so nothing here may tear it down.
 func Dial(ctx context.Context, addr string) (*Client, error) {
 	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -123,14 +124,14 @@ func (c *Client) Resume(
 	// without a round trip; the rule itself lives in one place. The code
 	// matches what the server would answer, so a caller sees one error
 	// either way.
-	if err := gats.ValidateID(clientID); err != nil {
+	if err := treevial.ValidateID(clientID); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	// The ID travels in the request header, where it identifies the stream
 	// for its whole life.
-	stream, err := gatspb.NewObjectSyncClient(c.conn).Sync(
-		metadata.AppendToOutgoingContext(ctx, gats.IDHeader, clientID),
+	stream, err := treevialpb.NewObjectSyncClient(c.conn).Sync(
+		metadata.AppendToOutgoingContext(ctx, treevial.IDHeader, clientID),
 	)
 	if err != nil {
 		return nil, err
@@ -141,7 +142,7 @@ func (c *Client) Resume(
 		syncedHex = synced.String()
 	}
 
-	register := &gatspb.ClientMsg{Body: &gatspb.ClientMsg_Register{Register: &gatspb.Register{
+	register := &treevialpb.ClientMsg{Body: &treevialpb.ClientMsg_Register{Register: &treevialpb.Register{
 		Synced: syncedHex,
 	}}}
 	if err := stream.Send(register); err != nil {
@@ -166,7 +167,7 @@ func (c *Client) Resume(
 // complete is it acknowledged and reported.
 func (c *Client) consume(
 	ctx context.Context,
-	stream gatspb.ObjectSync_SyncClient,
+	stream treevialpb.ObjectSync_SyncClient,
 	clientID string,
 	synced plumbing.Hash,
 	graph *receive.Graph,
@@ -187,13 +188,13 @@ func (c *Client) consume(
 		}
 
 		switch body := msg.GetBody().(type) {
-		case *gatspb.ServerMsg_Begin:
+		case *treevialpb.ServerMsg_Begin:
 			if current != nil {
 				return fmt.Errorf("server began an update while %s was still open", current.hash)
 			}
 			current = beginUpdate(body.Begin, graph)
 
-		case *gatspb.ServerMsg_Chunk:
+		case *treevialpb.ServerMsg_Chunk:
 			if current == nil {
 				return errors.New("server sent pack data outside an update")
 			}
@@ -201,7 +202,7 @@ func (c *Client) consume(
 				return err
 			}
 
-		case *gatspb.ServerMsg_End:
+		case *treevialpb.ServerMsg_End:
 			if current == nil {
 				return errors.New("server ended an update that never began")
 			}
@@ -210,7 +211,7 @@ func (c *Client) consume(
 				return err
 			}
 
-			ack := &gatspb.ClientMsg{Body: &gatspb.ClientMsg_Ack{Ack: &gatspb.Ack{
+			ack := &treevialpb.ClientMsg{Body: &treevialpb.ClientMsg_Ack{Ack: &treevialpb.Ack{
 				Hash: current.hash.String(),
 			}}}
 			if err := stream.Send(ack); err != nil {
@@ -220,7 +221,7 @@ func (c *Client) consume(
 			select {
 			case updates <- Update{
 				ClientID:    clientID,
-				Ref:         gats.RefFor(clientID),
+				Ref:         treevial.RefFor(clientID),
 				Hash:        current.hash,
 				Previous:    previous,
 				ObjectCount: current.objectCount,
@@ -250,7 +251,7 @@ type inflight struct {
 	done chan error
 }
 
-func beginUpdate(begin *gatspb.UpdateBegin, graph *receive.Graph) *inflight {
+func beginUpdate(begin *treevialpb.UpdateBegin, graph *receive.Graph) *inflight {
 	u := &inflight{
 		hash:        plumbing.NewHash(begin.GetHash()),
 		objectCount: begin.GetObjectCount(),

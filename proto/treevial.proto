@@ -1,17 +1,17 @@
 syntax = "proto3";
 
-package gats.v1;
+package treevial.v1;
 
-option go_package = "github.com/holoplot/gats/internal/gatspb;gatspb";
+option go_package = "github.com/holoplot/treevial/internal/treevialpb;treevialpb";
 
 // ObjectSync carries a reversed-role git object transfer: the client dials and
 // keeps a single long-lived stream open, but it is the server that pushes
 // objects down that stream whenever the ref the client subscribed to moves.
 //
-// The client identifies itself in the "gats-client-id" request header, and that
-// ID alone decides which ref it is served: refs/heads/<client-id>/config. The
-// server prepares that data when the client connects and drops it again when it
-// disconnects, so nothing in the stream itself names a ref.
+// The client identifies itself in the "treevial-client-id" request header, and
+// that ID alone decides which ref it is served: refs/heads/<client-id>/config.
+// The server prepares that data when the client connects and drops it again
+// when it disconnects, so nothing in the stream itself names a ref.
 service ObjectSync {
   rpc Sync(stream ClientMsg) returns (stream ServerMsg);
 }

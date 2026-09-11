@@ -1,6 +1,6 @@
-# gats — reversed-role git object transfer
+# treevial — reversed-role git object transfer
 
-`gats` moves git objects the wrong way round. The client dials the server, but
+`treevial` moves git objects the wrong way round. The client dials the server, but
 it never asks for anything: it states who it is, names the tree it already
 holds, and then the **server** prepares that client's data and pushes objects
 down the connection whenever its ref moves.
@@ -16,22 +16,22 @@ The two sides are separate packages, so a client repository and a server
 repository can each depend on only what it needs.
 
 ```console
-go get github.com/holoplot/gats
+go get github.com/holoplot/treevial
 ```
 
 | Import | For | Pulls in |
 |---|---|---|
-| `github.com/holoplot/gats` | The shared contract: `IDHeader`, `RefFor`, `ValidateID` | both sides need it |
-| `github.com/holoplot/gats/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
-| `github.com/holoplot/gats/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
-| `github.com/holoplot/gats/server` | `Server`, `Provider`, `ClientState` | server repositories |
-| `github.com/holoplot/gats/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
-| `github.com/holoplot/gats/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
+| `github.com/holoplot/treevial` | The shared contract: `IDHeader`, `RefFor`, `ValidateID` | both sides need it |
+| `github.com/holoplot/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
+| `github.com/holoplot/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
+| `github.com/holoplot/treevial/server` | `Server`, `Provider`, `ClientState` | server repositories |
+| `github.com/holoplot/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
+| `github.com/holoplot/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
 
 A client:
 
 ```go
-conn, err := client.Dial(ctx, "gats.internal:9418")
+conn, err := client.Dial(ctx, "treevial.internal:9418")
 updates, err := conn.Subscribe(ctx, "printer-7")   // served refs/heads/printer-7/config
 
 for u := range updates {
@@ -88,7 +88,7 @@ err = structtree.Apply(&config, leaves)     // config is now current
 **The two sides share one baseline struct.** The server walks that type into a
 tree; the client applies the tree back into the same type. When the two live in
 different repositories, a small package holding the struct is what they both
-depend on, alongside gats itself — `examples/consumer/settings` is exactly
+depend on, alongside treevial itself — `examples/consumer/settings` is exactly
 that.
 
 The tree is the source of truth, so applying it settles the whole value: a
@@ -161,7 +161,7 @@ srv.SetHead("printer-7", newRoot)   // pushes immediately
 `TestSeparateModuleConsumersBuild` builds it — so the claim that each side can
 be consumed independently is checked, not asserted.
 
-The wire format lives in `proto/gats.proto`. Its generated Go bindings are
+The wire format lives in `proto/treevial.proto`. Its generated Go bindings are
 deliberately **internal**: the supported surface is the Go API above, and
 anyone implementing another language's client works from the `.proto` file.
 
@@ -169,7 +169,7 @@ anyone implementing another language's client works from the `.proto` file.
 
 ```
 client                                     server
-  │  header: gats-client-id: printer-7  ────►│   validate the ID, prepare
+  │  header: treevial-client-id: printer-7  ────►│   validate the ID, prepare
   │                                          │   refs/heads/printer-7/config
   │  Register{synced}  ─────────────────────►│   walk that ref, pruning what
   │                                          │   "synced" already covers
@@ -189,7 +189,7 @@ Refs point **directly at a tree**. No commit objects are involved.
 
 ## A client is its ID
 
-A client identifies itself in the `gats-client-id` request header, and that ID
+A client identifies itself in the `treevial-client-id` request header, and that ID
 alone decides what it is served: its data is published at
 `refs/heads/<client-id>/config`. Nothing in the stream names a ref.
 
@@ -248,9 +248,9 @@ not the enforcement policy.
 ## Try the example
 
 ```console
-$ go run ./cmd/gats-server                       # prepares data per client on connect
-$ go run ./cmd/gats-client -id printer-7         # served refs/heads/printer-7/config
-$ go run ./cmd/gats-client -id sensor-3          # served its own tree, independently
+$ go run ./cmd/treevial-server                       # prepares data per client on connect
+$ go run ./cmd/treevial-client -id printer-7         # served refs/heads/printer-7/config
+$ go run ./cmd/treevial-client -id sensor-3          # served its own tree, independently
 ```
 
 Each client gets its own configuration struct, personalised with its ID, and
@@ -322,17 +322,17 @@ even though the whole struct is current.
 
 | Path | Role |
 |---|---|
-| `gats.go` | The ID↔ref contract shared by both sides |
+| `treevial.go` | The ID↔ref contract shared by both sides |
 | `client/` | gRPC client: identifies itself, feeds chunks to the interpreter, acknowledges |
 | `receive/` | Interprets an arriving packfile object by object; no storage of any kind |
 | `server/` | gRPC server: client registry, per-client data lifecycle, push on ref change |
 | `objects/` | In-memory store, `SelectSince` object arithmetic, pack encoding |
 | `structtree/` | Walks a Go struct with reflect onto a tree, and applies a tree back into one, whole or incrementally |
-| `internal/gatspb/` | Generated wire bindings |
+| `internal/treevialpb/` | Generated wire bindings |
 | `internal/demo/` | The example configuration struct, used by `cmd/` and the tests |
 | `internal/e2e/` | Client and server together over a real TCP listener |
 | `examples/consumer/` | A separate module: a shared `settings` struct, and each side importing only its own half |
-| `proto/gats.proto` | The wire contract |
+| `proto/treevial.proto` | The wire contract |
 
 ## A note on go-git's packfile API
 

@@ -1,4 +1,4 @@
-module github.com/holoplot/gats
+module github.com/holoplot/treevial
 
 go 1.26.0
 

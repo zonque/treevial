@@ -8,9 +8,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/receive"
 )
 
 // recorder captures the callbacks in the order they fire, so a test can assert

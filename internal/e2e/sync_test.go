@@ -15,13 +15,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/client"
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/internal/gatspb"
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/receive"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/client"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/internal/treevialpb"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/receive"
+	"github.com/holoplot/treevial/structtree"
 )
 
 func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
@@ -79,7 +79,7 @@ func TestClientIsServedAtItsOwnRef(t *testing.T) {
 	if clients[0].Ref != want {
 		t.Errorf("server publishes at %q, want %q", clients[0].Ref, want)
 	}
-	if clients[0].Ref != gats.RefFor("printer-7") {
+	if clients[0].Ref != treevial.RefFor("printer-7") {
 		t.Errorf("server ref %q disagrees with clientref.For", clients[0].Ref)
 	}
 }
@@ -335,7 +335,7 @@ func TestStreamWithoutTheIDHeaderIsRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	// The generated stub is used directly here, because gatscli always sets
+	// The generated stub is used directly here, because treevialcli always sets
 	// the header.
 	conn, err := grpc.NewClient(h.addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -343,12 +343,12 @@ func TestStreamWithoutTheIDHeaderIsRejected(t *testing.T) {
 	}
 	defer conn.Close()
 
-	stream, err := gatspb.NewObjectSyncClient(conn).Sync(ctx)
+	stream, err := treevialpb.NewObjectSyncClient(conn).Sync(ctx)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	register := &gatspb.ClientMsg{Body: &gatspb.ClientMsg_Register{Register: &gatspb.Register{}}}
+	register := &treevialpb.ClientMsg{Body: &treevialpb.ClientMsg_Register{Register: &treevialpb.Register{}}}
 	if err := stream.Send(register); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

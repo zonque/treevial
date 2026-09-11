@@ -8,7 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/treevial/receive"
 )
 
 // signaller closes first as soon as any object is handed over, so a test can

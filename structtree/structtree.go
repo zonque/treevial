@@ -1,10 +1,11 @@
 // Package structtree maps a Go struct onto a git tree.
 //
 // The hierarchy of the struct becomes the hierarchy of the tree: each field
-// name is a path element, joined with "/", so a value at cfg.Network.Primary.MTU
-// is stored as the blob "Network/Primary/MTU". That is what lets the rest of
-// gats work unchanged — the same path handling, the same subtree pruning, the
-// same diffs — while the thing being synchronised is an ordinary Go value.
+// name is a path element, joined with "/", so a value at
+// cfg.Network.Primary.MTU is stored as the blob "Network/Primary/MTU". That is
+// what lets the rest of treevial work unchanged — the same path handling, the
+// same subtree pruning, the same diffs — while the thing being synchronised is
+// an ordinary Go value.
 //
 // A field is a leaf if it is not a struct, or if it is a struct that
 // implements proto.Message. Everything else is descended into. So a slice, a
@@ -30,7 +31,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/holoplot/gats/objects"
+	"github.com/holoplot/treevial/objects"
 )
 
 // protoMessage is the interface a struct must implement to be treated as a

@@ -10,16 +10,16 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// TestServerNeverAnswersPingsWithEnhanceYourCalm speaks HTTP/2 to the gats
+// TestServerNeverAnswersPingsWithEnhanceYourCalm speaks HTTP/2 to the treevial
 // server directly and pings it as fast as it can.
 //
 // gRPC's default enforcement policy allows one ping every five minutes and
 // answers anything faster with GOAWAY ENHANCE_YOUR_CALM, closing the
-// connection after three strikes. A gats connection has to survive any ping
+// connection after three strikes. A treevial connection has to survive any ping
 // rate: the server relies on it being there to push at a moment of its own
 // choosing, so no amount of client chatter may be grounds for hanging up.
 //
-// Raw frames are used rather than a gats client because grpc-go clamps a
+// Raw frames are used rather than a treevial client because grpc-go clamps a
 // client's ping interval to ten seconds, which would make this test take the
 // best part of a minute to reach the strike threshold.
 func TestServerNeverAnswersPingsWithEnhanceYourCalm(t *testing.T) {

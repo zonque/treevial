@@ -7,10 +7,10 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/gats"
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/structtree"
 )
 
 // clientData is everything the server holds for one client: the Go value being
@@ -48,7 +48,7 @@ func (p *demoProvider) Prepare(clientID string) (*objects.Store, plumbing.Hash, 
 	p.mu.Unlock()
 
 	log.Printf("[%s] prepared %s -> %s, %d leaves walked from the struct (%d clients held)",
-		clientID, gats.RefFor(clientID), root, demo.LeafCount, held)
+		clientID, treevial.RefFor(clientID), root, demo.LeafCount, held)
 
 	return data.store, root, nil
 }

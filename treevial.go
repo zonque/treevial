@@ -1,4 +1,4 @@
-// Package gats implements a reversed-role git object transfer.
+// Package treevial implements a reversed-role git object transfer.
 //
 // The client dials the server and keeps one long-lived stream open, but it
 // never asks for anything: it identifies itself, states which tree it already
@@ -10,21 +10,21 @@
 // The two sides are separate packages, so a client repository and a server
 // repository can each depend on only what it needs:
 //
-//   - [github.com/holoplot/gats/client] dials, subscribes and interprets.
-//   - [github.com/holoplot/gats/server] serves clients and pushes to them.
-//   - [github.com/holoplot/gats/objects] builds and packs the object graph a
-//     server serves.
-//   - [github.com/holoplot/gats/receive] interprets an arriving packfile
+//   - [github.com/holoplot/treevial/client] dials, subscribes and interprets.
+//   - [github.com/holoplot/treevial/server] serves clients and pushes to them.
+//   - [github.com/holoplot/treevial/objects] builds and packs the object graph
+//     a server serves.
+//   - [github.com/holoplot/treevial/receive] interprets an arriving packfile
 //     without storing it.
 //
 // This package holds what both sides must agree on: how a client identifies
 // itself, and which ref that identity is served at.
 //
-// The wire format is defined by proto/gats.proto in the repository. Its
+// The wire format is defined by proto/treevial.proto in the repository. Its
 // generated Go bindings are internal, because the supported surface is the Go
 // API in these packages; anyone implementing another language's client works
 // from the .proto file.
-package gats
+package treevial
 
 import (
 	"fmt"
@@ -33,7 +33,7 @@ import (
 
 // IDHeader is the gRPC request header a client states its ID in. The value
 // decides which ref the client is served, so both sides agree on it here.
-const IDHeader = "gats-client-id"
+const IDHeader = "treevial-client-id"
 
 // MaxIDLength bounds a client ID, so a ref name cannot be grown without limit
 // by whatever a client puts in its header.

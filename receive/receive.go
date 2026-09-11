@@ -35,7 +35,7 @@ type Handler interface {
 
 // Interpret reads a packfile from r and hands every object to h as it is
 // inflated. Only blobs and trees are expected: the sender encodes without
-// deltas, and gats transfers no commits or tags.
+// deltas, and treevial transfers no commits or tags.
 func Interpret(r io.Reader, h Handler) error {
 	scanner := packfile.NewScanner(r)
 

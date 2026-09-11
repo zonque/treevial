@@ -1,14 +1,14 @@
-package gats_test
+package treevial_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/holoplot/gats"
+	"github.com/holoplot/treevial"
 )
 
 func TestRefForBuildsTheRefFromTheClientID(t *testing.T) {
-	got := gats.RefFor("printer-7")
+	got := treevial.RefFor("printer-7")
 
 	if want := "refs/heads/printer-7/config"; got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -17,7 +17,7 @@ func TestRefForBuildsTheRefFromTheClientID(t *testing.T) {
 
 func TestValidateIDAcceptsOrdinaryIDs(t *testing.T) {
 	for _, id := range []string{"a", "printer-7", "node_12", "v1.2", "ABC-xyz-0"} {
-		if err := gats.ValidateID(id); err != nil {
+		if err := treevial.ValidateID(id); err != nil {
 			t.Errorf("ValidateID(%q): %v", id, err)
 		}
 	}
@@ -46,14 +46,14 @@ func TestValidateIDRejectsIDsThatWouldEscapeTheRefPath(t *testing.T) {
 		"dot..dot",      // git forbids
 		"new\nline",
 	} {
-		if err := gats.ValidateID(id); err == nil {
+		if err := treevial.ValidateID(id); err == nil {
 			t.Errorf("ValidateID(%q) accepted an unusable client ID", id)
 		}
 	}
 }
 
 func TestValidateIDRejectsOverlongIDs(t *testing.T) {
-	if err := gats.ValidateID(strings.Repeat("a", 256)); err == nil {
+	if err := treevial.ValidateID(strings.Repeat("a", 256)); err == nil {
 		t.Error("ValidateID accepted an unbounded client ID")
 	}
 }

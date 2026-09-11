@@ -7,8 +7,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/structtree"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/structtree"
 )
 
 // rebuilt stores v and returns its root hash, so two values can be compared by

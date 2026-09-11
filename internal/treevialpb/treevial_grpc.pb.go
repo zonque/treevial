@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.2.0
 // - protoc             v3.19.6
-// source: gats.proto
+// source: treevial.proto
 
-package gatspb
+package treevialpb
 
 import (
 	context "context"
@@ -34,7 +34,7 @@ func NewObjectSyncClient(cc grpc.ClientConnInterface) ObjectSyncClient {
 }
 
 func (c *objectSyncClient) Sync(ctx context.Context, opts ...grpc.CallOption) (ObjectSync_SyncClient, error) {
-	stream, err := c.cc.NewStream(ctx, &ObjectSync_ServiceDesc.Streams[0], "/gats.v1.ObjectSync/Sync", opts...)
+	stream, err := c.cc.NewStream(ctx, &ObjectSync_ServiceDesc.Streams[0], "/treevial.v1.ObjectSync/Sync", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func (x *objectSyncSyncServer) Recv() (*ClientMsg, error) {
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ObjectSync_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "gats.v1.ObjectSync",
+	ServiceName: "treevial.v1.ObjectSync",
 	HandlerType: (*ObjectSyncServer)(nil),
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
@@ -133,5 +133,5 @@ var ObjectSync_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "gats.proto",
+	Metadata: "treevial.proto",
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/holoplot/gats/internal/demo"
+	"github.com/holoplot/treevial/internal/demo"
 )
 
 func TestChangedSubtreeIsTheParentOfALoneChange(t *testing.T) {

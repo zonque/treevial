@@ -8,9 +8,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/holoplot/gats/internal/demo"
-	"github.com/holoplot/gats/objects"
-	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/treevial/internal/demo"
+	"github.com/holoplot/treevial/objects"
+	"github.com/holoplot/treevial/receive"
 )
 
 // feed pushes the whole graph rooted at root through a pack and into g, the way

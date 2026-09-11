@@ -3,7 +3,7 @@
 // This is the part that has to be common: the server walks this type into a
 // tree, and the client applies the tree back into the same type. When the two
 // sides live in different repositories, a package like this one is what they
-// both depend on — alongside gats itself.
+// both depend on — alongside treevial itself.
 package settings
 
 import "google.golang.org/protobuf/types/known/timestamppb"
