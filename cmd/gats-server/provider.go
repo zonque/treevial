@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"sync"
 
@@ -9,60 +10,77 @@ import (
 	"github.com/holoplot/gats"
 	"github.com/holoplot/gats/internal/demo"
 	"github.com/holoplot/gats/objects"
+	"github.com/holoplot/gats/structtree"
 )
 
-// demoProvider builds a nested tree of ten blobs for each client that
-// connects, in a store of that client's own, and throws the store away when the
-// client disconnects. Because every client's objects live in a separate store,
-// releasing one is nothing more than dropping the reference.
+// clientData is everything the server holds for one client: the Go value being
+// synchronised and the store its objects live in.
+type clientData struct {
+	config *demo.Config
+	store  *objects.Store
+}
+
+// demoProvider gives each client that connects its own configuration struct,
+// in a store of its own, and throws both away when the client disconnects.
+// Because nothing is shared between clients, releasing one is nothing more
+// than dropping the reference.
 type demoProvider struct {
-	mu     sync.Mutex
-	stores map[string]*objects.Store
+	mu   sync.Mutex
+	held map[string]*clientData
 }
 
 func newDemoProvider() *demoProvider {
-	return &demoProvider{stores: map[string]*objects.Store{}}
+	return &demoProvider{held: map[string]*clientData{}}
 }
 
 // Prepare implements server.Provider.
 func (p *demoProvider) Prepare(clientID string) (*objects.Store, plumbing.Hash, error) {
-	store := objects.NewStore()
+	data := &clientData{config: demo.Example(clientID), store: objects.NewStore()}
 
-	root, err := demo.BuildTree(store, clientID)
+	root, err := structtree.Build(data.store, data.config)
 	if err != nil {
 		return nil, plumbing.ZeroHash, err
 	}
 
 	p.mu.Lock()
-	p.stores[clientID] = store
-	held := len(p.stores)
+	p.held[clientID] = data
+	held := len(p.held)
 	p.mu.Unlock()
 
-	log.Printf("[%s] prepared %s -> %s with %d blob leaves (%d clients held)",
+	log.Printf("[%s] prepared %s -> %s, %d leaves walked from the struct (%d clients held)",
 		clientID, gats.RefFor(clientID), root, demo.LeafCount, held)
 
-	return store, root, nil
+	return data.store, root, nil
 }
 
 // Release implements server.Provider.
 func (p *demoProvider) Release(clientID string) {
 	p.mu.Lock()
-	_, existed := p.stores[clientID]
-	delete(p.stores, clientID)
-	held := len(p.stores)
+	_, existed := p.held[clientID]
+	delete(p.held, clientID)
+	held := len(p.held)
 	p.mu.Unlock()
 
 	if !existed {
 		return
 	}
 
-	log.Printf("[%s] disconnected; released its objects (%d clients held)", clientID, held)
+	log.Printf("[%s] disconnected; released its config and objects (%d clients held)", clientID, held)
 }
 
-// store returns a client's store, or nil once it has been released.
-func (p *demoProvider) store(clientID string) *objects.Store {
+// Retune changes one deeply nested field of a client's configuration and
+// rebuilds the tree. Only the blob for that field and the trees above it are
+// new, so the push that follows is tiny.
+func (p *demoProvider) Retune(clientID string) (plumbing.Hash, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	data, ok := p.held[clientID]
+	p.mu.Unlock()
 
-	return p.stores[clientID]
+	if !ok {
+		return plumbing.ZeroHash, fmt.Errorf("client %q is gone", clientID)
+	}
+
+	data.config.Network.Primary.MTU = 9000
+
+	return structtree.Build(data.store, data.config)
 }

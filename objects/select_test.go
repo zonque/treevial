@@ -22,8 +22,9 @@ func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {
 		t.Fatalf("SelectSince: %v", err)
 	}
 
-	// 10 blobs plus the root, a, b and c trees.
-	if want := 14; len(got) != want {
+	// 10 blobs plus the root, Device, Location, Network, Primary
+	// and Audio trees.
+	if want := 16; len(got) != want {
 		t.Errorf("got %d objects, want %d", len(got), want)
 	}
 }
@@ -54,7 +55,7 @@ func TestSelectSinceReturnsOnlyThePathToAChangedLeaf(t *testing.T) {
 		t.Fatalf("BuildTree v1: %v", err)
 	}
 
-	v2, err := s.ReplaceBlob(v1, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	v2, err := s.ReplaceBlob(v1, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}

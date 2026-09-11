@@ -38,7 +38,7 @@ func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	// The connection must still be usable for an unprompted push.
 	store := h.provider.store(t, "printer-7")
 
-	v2, err := store.ReplaceBlob(first.Hash, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}

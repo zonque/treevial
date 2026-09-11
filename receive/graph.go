@@ -2,7 +2,6 @@ package receive
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -46,6 +45,22 @@ func (g *Graph) OnTree(h plumbing.Hash, entries []object.TreeEntry) error {
 // OnPackFooter implements Handler.
 func (g *Graph) OnPackFooter(plumbing.Hash) error { return nil }
 
+// Blob returns the content of the blob at h. The bytes belong to the graph and
+// must not be modified.
+func (g *Graph) Blob(h plumbing.Hash) ([]byte, bool) {
+	content, ok := g.blobs[h]
+
+	return content, ok
+}
+
+// Tree returns the entries of the tree at h. The slice belongs to the graph and
+// must not be modified.
+func (g *Graph) Tree(h plumbing.Hash) ([]object.TreeEntry, bool) {
+	entries, ok := g.trees[h]
+
+	return entries, ok
+}
+
 // Leaves walks the tree at root and returns every blob keyed by its
 // slash-separated path.
 func (g *Graph) Leaves(root plumbing.Hash) (map[string][]byte, error) {
@@ -80,48 +95,6 @@ func (g *Graph) walk(h plumbing.Hash, prefix string, out map[string][]byte) erro
 			return fmt.Errorf("blob %s (%s) missing from graph", e.Hash, path)
 		}
 		out[path] = content
-	}
-
-	return nil
-}
-
-// Format renders the tree at root as an indented listing, for the example's
-// output.
-func (g *Graph) Format(root plumbing.Hash) (string, error) {
-	var out string
-
-	if err := g.format(root, "", &out); err != nil {
-		return "", err
-	}
-
-	return out, nil
-}
-
-func (g *Graph) format(h plumbing.Hash, indent string, out *string) error {
-	entries, ok := g.trees[h]
-	if !ok {
-		return fmt.Errorf("tree %s missing from graph", h)
-	}
-
-	sorted := append([]object.TreeEntry(nil), entries...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-
-	for _, e := range sorted {
-		if e.Mode == filemode.Dir {
-			*out += fmt.Sprintf("%s%s/\n", indent, e.Name)
-
-			if err := g.format(e.Hash, indent+"  ", out); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		content, ok := g.blobs[e.Hash]
-		if !ok {
-			return fmt.Errorf("blob %s (%s) missing from graph", e.Hash, e.Name)
-		}
-		*out += fmt.Sprintf("%s%s  %s  %q\n", indent, e.Name, e.Hash.String()[:8], string(content))
 	}
 
 	return nil

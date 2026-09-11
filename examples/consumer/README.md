@@ -5,9 +5,14 @@ through a `replace` directive. It exists to prove what the layout is for: that
 a client repository and a server repository can each import only their own side
 of gats and build.
 
-`clientside` imports `gats` and `gats/client` — no server package, no object
-store. `serverside` imports `gats`, `gats/server` and `gats/objects` — no
-client package. Neither can reach `gats/internal/...`, so if a public API ever
+`settings` holds the baseline struct the two sides share: the server walks it
+into a tree, the client applies the tree back into it. When the two sides live
+in different repositories, a package like this is what they both depend on,
+alongside gats itself.
+
+`clientside` imports `gats`, `gats/client`, `gats/structtree` and `settings` —
+no server package, no object store. `serverside` imports `gats`, `gats/server`,
+`gats/objects`, `gats/structtree` and `settings` — no client package. Neither can reach `gats/internal/...`, so if a public API ever
 leaked an internal type these would stop compiling.
 
 `TestSeparateModuleConsumersBuild` in the main module builds this one.

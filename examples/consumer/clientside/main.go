@@ -1,6 +1,10 @@
 // Command clientside is a minimal gats client living in a module of its own.
 // It imports the client side and nothing else: no server package, no object
 // store.
+//
+// It decodes into the same settings.Settings the server walked — the two
+// sides share that one baseline struct, and nothing else about the wire
+// format need concern either of them.
 package main
 
 import (
@@ -13,6 +17,9 @@ import (
 
 	"github.com/holoplot/gats"
 	"github.com/holoplot/gats/client"
+	"github.com/holoplot/gats/structtree"
+
+	"github.com/holoplot/gats-consumer-example/settings"
 )
 
 func main() {
@@ -40,17 +47,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for u := range updates {
-		log.Printf("%s -> %s, %d objects", u.Ref, u.Hash, u.ObjectCount)
+	// Each update settles this value completely.
+	var current settings.Settings
 
-		leaves, err := u.Graph.Leaves(u.Hash)
-		if err != nil {
+	for u := range updates {
+		// Decodes only what moved since the previous push.
+		if err := structtree.ApplySince(&current, u.Graph, u.Previous, u.Hash); err != nil {
 			log.Fatal(err)
 		}
 
-		for path, content := range leaves {
-			log.Printf("  %s = %q", path, content)
-		}
+		log.Printf("%s -> %s, %d objects", u.Ref, u.Hash, u.ObjectCount)
+		log.Printf("  owner   %s (%s)", current.Owner.Name, current.Owner.Team)
+		log.Printf("  display brightness %d, rotation %d", current.Display.Brightness, current.Display.Rotation)
+		log.Printf("  seen    %s", current.Seen.AsTime())
 	}
 
 	if ctx.Err() != nil {

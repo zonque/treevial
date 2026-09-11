@@ -2,7 +2,6 @@ package receive_test
 
 import (
 	"bytes"
-	"sort"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -45,11 +44,8 @@ func blobEntry(t *testing.T, s *objects.Store, name, content string) object.Tree
 	return object.TreeEntry{Name: name, Mode: filemode.Regular, Hash: h}
 }
 
-// tree stores a tree, sorting the entries because git requires it.
 func tree(t *testing.T, s *objects.Store, entries ...object.TreeEntry) plumbing.Hash {
 	t.Helper()
-
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	h, err := s.AddTree(entries)
 	if err != nil {
@@ -89,7 +85,7 @@ func TestDiffReportsOnlyTheRewrittenLeaf(t *testing.T) {
 	}
 	feed(t, g, s, v1)
 
-	v2, err := s.ReplaceBlob(v1, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	v2, err := s.ReplaceBlob(v1, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
@@ -103,13 +99,13 @@ func TestDiffReportsOnlyTheRewrittenLeaf(t *testing.T) {
 	if len(changes) != 1 {
 		t.Fatalf("got %d changes, want 1: %v", len(changes), changes)
 	}
-	if got, want := changes[0].Path, "b/c/leaf-07"; got != want {
+	if got, want := changes[0].Path, "Network/Primary/MTU"; got != want {
 		t.Errorf("path: got %q, want %q", got, want)
 	}
 	if changes[0].Kind != receive.Modified {
 		t.Errorf("kind: got %v, want Modified", changes[0].Kind)
 	}
-	if got, want := string(changes[0].Content), "leaf-07 v2\n"; got != want {
+	if got, want := string(changes[0].Content), "9000"; got != want {
 		t.Errorf("content: got %q, want %q", got, want)
 	}
 }

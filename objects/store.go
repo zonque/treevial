@@ -7,6 +7,7 @@ package objects
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -47,9 +48,16 @@ func (s *Store) AddBlob(content []byte) (plumbing.Hash, error) {
 	return s.storage.SetEncodedObject(obj)
 }
 
-// AddTree stores entries as a tree object and returns its hash.
+// AddTree stores entries as a tree object and returns its hash. The entries
+// are sorted into git's canonical order first — which compares directories as
+// though their names ended in a slash — so callers may pass them in whatever
+// order suits them.
 func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
-	tree := &object.Tree{Entries: entries}
+	sorted := make([]object.TreeEntry, len(entries))
+	copy(sorted, entries)
+	sort.Sort(object.TreeEntrySorter(sorted))
+
+	tree := &object.Tree{Entries: sorted}
 
 	obj := s.storage.NewEncodedObject()
 	if err := tree.Encode(obj); err != nil {

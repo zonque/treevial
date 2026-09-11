@@ -1,10 +1,10 @@
-// Command gats-server serves a nested tree of ten blobs per client. A client
-// identifies itself in the gats-client-id request header; the server prepares
-// that client's objects on connect, publishes them at
-// refs/heads/<client-id>/config, and pushes them down the stream. A few seconds
-// after a client has synced it rewrites one leaf and pushes again, which is
-// where the long-lived connection earns its keep: the second transfer costs
-// four objects, not fourteen.
+// Command gats-server synchronises a deeply nested Go struct to each client.
+// A client identifies itself in the gats-client-id request header; the server
+// builds that client's configuration on connect, walks it with structtree into
+// a git tree published at refs/heads/<client-id>/config, and pushes it down the
+// stream. A few seconds after a client has synced it changes one deeply nested
+// field and pushes again, which is where the long-lived connection earns its
+// keep: the second transfer costs four objects, not sixteen.
 package main
 
 import (
@@ -25,7 +25,7 @@ import (
 
 func main() {
 	addr := flag.String("listen", "127.0.0.1:9418", "address to listen on")
-	mutate := flag.Duration("mutate", 3*time.Second, "rewrite a leaf this long after a client syncs (0 to disable)")
+	mutate := flag.Duration("mutate", 3*time.Second, "change a nested field this long after a client syncs (0 to disable)")
 	flag.Parse()
 
 	if err := run(*addr, *mutate); err != nil {
@@ -54,8 +54,9 @@ func run(addr string, mutate time.Duration) error {
 }
 
 // mutateSyncedClients watches for clients that have caught up and, once each
-// has, rewrites a leaf of its tree and moves its ref, which makes the server
-// push again of its own accord. One rewrite per client is enough to show it.
+// has, changes a field of its configuration and moves its ref, which makes the
+// server push again of its own accord. One change per client is enough to show
+// it.
 func mutateSyncedClients(srv *server.Server, provider *demoProvider, after time.Duration) {
 	done := map[string]bool{}
 
@@ -79,19 +80,12 @@ func mutateOnce(
 	head plumbing.Hash,
 	after time.Duration,
 ) {
-	log.Printf("[%s] synced at %s; rewriting b/c/leaf-07 in %s", clientID, head, after)
+	log.Printf("[%s] synced at %s; setting Network.Primary.MTU in %s", clientID, head, after)
 	time.Sleep(after)
 
-	store := provider.store(clientID)
-	if store == nil {
-		log.Printf("[%s] gone before its leaf could be rewritten", clientID)
-
-		return
-	}
-
-	next, err := store.ReplaceBlob(head, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	next, err := provider.Retune(clientID)
 	if err != nil {
-		log.Printf("[%s] rewrite leaf: %v", clientID, err)
+		log.Printf("[%s] retune: %v", clientID, err)
 
 		return
 	}

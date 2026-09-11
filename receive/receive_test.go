@@ -91,13 +91,13 @@ func TestInterpretDecodesEveryObjectInTheStream(t *testing.T) {
 		t.Fatalf("Interpret: %v", err)
 	}
 
-	if want := uint32(14); rec.count != want {
+	if want := uint32(16); rec.count != want {
 		t.Errorf("pack header announced %d objects, want %d", rec.count, want)
 	}
 	if want := 10; len(rec.blobs) != want {
 		t.Errorf("got %d blobs, want %d", len(rec.blobs), want)
 	}
-	if want := 4; len(rec.trees) != want {
+	if want := 6; len(rec.trees) != want {
 		t.Errorf("got %d trees, want %d", len(rec.trees), want)
 	}
 	if rec.footer.IsZero() {
@@ -135,18 +135,33 @@ func TestInterpretHandsOverContentMatchingTheSource(t *testing.T) {
 		t.Fatalf("Tree: %v", err)
 	}
 
-	var leaf09 plumbing.Hash
+	var audio plumbing.Hash
 	for _, e := range tree.Entries {
-		if e.Name == "leaf-09" {
-			leaf09 = e.Hash
+		if e.Name == "Audio" {
+			audio = e.Hash
+		}
+	}
+	if audio.IsZero() {
+		t.Fatal("the Audio subtree is missing")
+	}
+
+	gain, err := s.Tree(audio)
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+
+	var gainHash plumbing.Hash
+	for _, e := range gain.Entries {
+		if e.Name == "Gain" {
+			gainHash = e.Hash
 		}
 	}
 
-	got, ok := rec.blobs[leaf09]
+	got, ok := rec.blobs[gainHash]
 	if !ok {
-		t.Fatalf("blob %s never delivered", leaf09)
+		t.Fatalf("blob %s never delivered", gainHash)
 	}
-	if want := "leaf-09 v1\n"; string(got) != want {
+	if want := "-6.5"; string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
@@ -180,9 +195,11 @@ func TestGraphRebuildsTheHierarchyFromCallbacksAlone(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"a/leaf-00", "a/leaf-01", "a/leaf-02", "a/leaf-03",
-		"b/c/leaf-04", "b/c/leaf-05", "b/c/leaf-06", "b/c/leaf-07",
-		"leaf-08", "leaf-09",
+		"Audio/Delay", "Audio/Gain",
+		"Device/Location/Room", "Device/Location/Row",
+		"Device/Name", "Device/Serial",
+		"Network/DNS", "Network/Hostname",
+		"Network/Primary/Address", "Network/Primary/MTU",
 	}
 
 	if len(got) != len(want) {
@@ -193,7 +210,7 @@ func TestGraphRebuildsTheHierarchyFromCallbacksAlone(t *testing.T) {
 			t.Errorf("leaf %d: got %q, want %q", i, got[i], want[i])
 		}
 	}
-	if w := "leaf-04 v1\n"; string(leaves["b/c/leaf-04"]) != w {
-		t.Errorf("content of b/c/leaf-04: got %q, want %q", leaves["b/c/leaf-04"], w)
+	if w := "1500"; string(leaves["Network/Primary/MTU"]) != w {
+		t.Errorf("content of Network/Primary/MTU: got %q, want %q", leaves["Network/Primary/MTU"], w)
 	}
 }

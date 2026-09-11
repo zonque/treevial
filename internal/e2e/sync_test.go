@@ -7,6 +7,9 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -16,7 +19,9 @@ import (
 	"github.com/holoplot/gats/client"
 	"github.com/holoplot/gats/internal/demo"
 	"github.com/holoplot/gats/internal/gatspb"
+	"github.com/holoplot/gats/objects"
 	"github.com/holoplot/gats/receive"
+	"github.com/holoplot/gats/structtree"
 )
 
 func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
@@ -36,7 +41,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 	if prepared, _ := h.provider.counts("printer-7"); prepared != 1 {
 		t.Errorf("provider prepared data %d times, want once", prepared)
 	}
-	if want := uint32(14); u.ObjectCount != want {
+	if want := uint32(16); u.ObjectCount != want {
 		t.Errorf("pushed %d objects, want %d", u.ObjectCount, want)
 	}
 
@@ -105,11 +110,12 @@ func TestEachClientGetsItsOwnData(t *testing.T) {
 		t.Fatalf("Leaves: %v", err)
 	}
 
-	if got, want := string(leavesA["a/leaf-00"]), "leaf-00 printer-7\n"; got != want {
-		t.Errorf("printer-7 leaf: got %q, want %q", got, want)
+	// Each client's struct is personalised, so the leaf differs.
+	if got, want := string(leavesA["Device/Name"]), `"printer-7"`; got != want {
+		t.Errorf("printer-7 leaf: got %s, want %s", got, want)
 	}
-	if got, want := string(leavesB["a/leaf-00"]), "leaf-00 printer-8\n"; got != want {
-		t.Errorf("printer-8 leaf: got %q, want %q", got, want)
+	if got, want := string(leavesB["Device/Name"]), `"printer-8"`; got != want {
+		t.Errorf("printer-8 leaf: got %s, want %s", got, want)
 	}
 }
 
@@ -129,7 +135,7 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 
 	store := h.provider.store(t, "printer-7")
 
-	v2, err := store.ReplaceBlob(first.Hash, "b/c/leaf-07", []byte("leaf-07 v2\n"))
+	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
@@ -142,7 +148,8 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 	if second.Hash != v2 {
 		t.Errorf("second update hash %s, want %s", second.Hash, v2)
 	}
-	// The rewritten blob plus the c, b and root trees on its path.
+	// The rewritten blob plus the Primary, Network and root trees on its
+	// path; everything else is pruned.
 	if want := uint32(4); second.ObjectCount != want {
 		t.Errorf("second push carried %d objects, want %d", second.ObjectCount, want)
 	}
@@ -154,10 +161,10 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
-	if len(changes) != 1 || changes[0].Path != "b/c/leaf-07" {
-		t.Fatalf("got changes %v, want only b/c/leaf-07", changes)
+	if len(changes) != 1 || changes[0].Path != "Network/Primary/MTU" {
+		t.Fatalf("got changes %v, want only Network/Primary/MTU", changes)
 	}
-	if got, want := string(changes[0].Content), "leaf-07 v2\n"; got != want {
+	if got, want := string(changes[0].Content), "9000"; got != want {
 		t.Errorf("changed content: got %q, want %q", got, want)
 	}
 }
@@ -392,4 +399,166 @@ func drainForError(t *testing.T, c *client.Client, updates <-chan client.Update)
 	}
 
 	return nil
+}
+
+func TestClientRebuildsTheStructTheServerPublished(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	first := nextUpdate(t, updates)
+
+	// Both sides share the same baseline struct, so the client decodes
+	// into the very type the server walked.
+	var got demo.Config
+	if err := applyUpdate(t, &got, first); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if got.Device.Name != "printer-7" {
+		t.Errorf("Device.Name: got %q, want %q", got.Device.Name, "printer-7")
+	}
+	if got.Network.Primary == nil || got.Network.Primary.MTU != 1500 {
+		t.Errorf("Network.Primary: got %+v, want MTU 1500", got.Network.Primary)
+	}
+	if got.Network.Secondary != nil {
+		t.Errorf("Network.Secondary: got %+v, want nil", got.Network.Secondary)
+	}
+	if !proto.Equal(got.Audio.Delay, durationpb.New(12*time.Millisecond)) {
+		t.Errorf("Audio.Delay: got %v, want 12ms", got.Audio.Delay)
+	}
+
+	// Rebuilding the decoded struct must reproduce the server's tree
+	// exactly, which is only true if nothing was lost on the way.
+	if rebuild(t, &got) != first.Hash {
+		t.Errorf("rebuilt tree %s does not match the published %s", rebuild(t, &got), first.Hash)
+	}
+}
+
+func TestClientStructFollowsALaterPush(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	first := nextUpdate(t, updates)
+	waitForSync(t, h.server, "printer-7", first.Hash)
+
+	var cfg demo.Config
+	if err := applyUpdate(t, &cfg, first); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	store := h.provider.store(t, "printer-7")
+
+	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
+	if err != nil {
+		t.Fatalf("ReplaceBlob: %v", err)
+	}
+	if err := h.server.SetHead("printer-7", next); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	second := nextUpdate(t, updates)
+
+	// The second push carried four objects, but the client applies the
+	// whole tree, so the struct ends up wholly current.
+	if err := applyUpdate(t, &cfg, second); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if cfg.Network.Primary.MTU != 9000 {
+		t.Errorf("MTU: got %d, want 9000", cfg.Network.Primary.MTU)
+	}
+	if cfg.Device.Name != "printer-7" {
+		t.Errorf("an untouched field changed: %q", cfg.Device.Name)
+	}
+	if rebuild(t, &cfg) != second.Hash {
+		t.Errorf("rebuilt tree does not match the published %s", second.Hash)
+	}
+}
+
+// applyUpdate decodes an update into dst, the way a client would.
+func applyUpdate(t *testing.T, dst any, u client.Update) error {
+	t.Helper()
+
+	leaves, err := u.Graph.Leaves(u.Hash)
+	if err != nil {
+		t.Fatalf("Leaves: %v", err)
+	}
+
+	return structtree.Apply(dst, leaves)
+}
+
+// rebuild stores dst and returns its root hash, so a decoded struct can be
+// compared with the tree it came from.
+func rebuild(t *testing.T, dst any) plumbing.Hash {
+	t.Helper()
+
+	root, err := structtree.Build(objects.NewStore(), dst)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	return root
+}
+
+func TestClientFollowsPushesIncrementally(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, "printer-7")
+
+	// An Update carries exactly what ApplySince needs: the hash the
+	// subscription was at, and the one it has moved to.
+	var config demo.Config
+
+	first := nextUpdate(t, updates)
+	if err := structtree.ApplySince(&config, first.Graph, first.Previous, first.Hash); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	if rebuild(t, &config) != first.Hash {
+		t.Fatal("the first update did not produce the whole value")
+	}
+
+	waitForSync(t, h.server, "printer-7", first.Hash)
+
+	store := h.provider.store(t, "printer-7")
+
+	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
+	if err != nil {
+		t.Fatalf("ReplaceBlob: %v", err)
+	}
+	if err := h.server.SetHead("printer-7", next); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	second := nextUpdate(t, updates)
+
+	if err := structtree.ApplySince(&config, second.Graph, second.Previous, second.Hash); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	if config.Network.Primary.MTU != 9000 {
+		t.Errorf("MTU: got %d, want 9000", config.Network.Primary.MTU)
+	}
+	// Fields under subtrees that did not move were never decoded again,
+	// and are still right.
+	if config.Device.Name != "printer-7" {
+		t.Errorf("Device.Name: got %q, want %q", config.Device.Name, "printer-7")
+	}
+	if config.Audio.Gain != -6.5 {
+		t.Errorf("Audio.Gain: got %v, want -6.5", config.Audio.Gain)
+	}
+	if rebuild(t, &config) != second.Hash {
+		t.Errorf("incremental application does not match the published %s", second.Hash)
+	}
 }
