@@ -27,15 +27,24 @@ Hashes travel as 40 lowercase hexadecimal digits. Forty zeros mean "no hash".
 ### Client to server
 
 ```
-register <client-id> <synced>
+register <ref> <synced>
 ack <hash>
 ```
 
-`register` must be the first message; anything else is refused. `<client-id>`
-decides which ref the client is served — `refs/heads/<client-id>/config` — and
-must be usable as a path component: letters, digits, `-`, `_` and `.`, at most
-255 bytes, not starting with `.` or `-`, containing no `..`, and not ending in
-`.lock`.
+`register` must be the first message; anything else is refused. `<ref>` is the
+head the client wants, and **the server takes it verbatim** — it derives
+nothing from it and attaches no meaning to its shape. What a ref stands for is
+between the client and whatever serves it.
+
+The server checks only that `<ref>` is a usable git ref name, since it will be
+keyed on: under `refs/`, at most 512 bytes, no empty or dot-leading component,
+no `..`, no `@{`, no control characters or any of ``space ~ ^ : ? * [ \``, and
+not ending in `.lock`.
+
+The Go client builds its ref as `refs/heads/<id>/config` from an ID it is
+configured with, but that convention lives entirely in the client package. A
+different client may ask for `refs/devices/hall-a/row-3/seat-9` and be served
+just the same.
 
 `<synced>` is the tree the client already holds in full, or forty zeros if it
 holds nothing. Holding a tree means holding everything beneath it, so this one
@@ -74,7 +83,7 @@ for people, not for matching on.
 ## An exchange
 
 ```
-client → 0016register printer-7 0000000000000000000000000000000000000000
+client → 0040register refs/heads/printer-7/config 0000000000000000000000000000000000000000
 server → 0039update df0e0e1cd7146ab580338deb67e66bd05d42c1e8 16
 server → 8004<pack bytes>
 server → 0000
@@ -96,8 +105,8 @@ perfectly good connection in the meantime. Both sides enable TCP keepalive at 30
 seconds so that NATs and middleboxes do not forget an idle connection; the
 probes do not close a healthy one.
 
-One connection carries one subscription. A second connection claiming a client
-ID already in use is refused with `exists`.
+One connection carries one subscription. A second connection naming a ref that
+already has a subscriber is refused with `exists`.
 
 Closing the connection is how a subscription ends. The server notices, drops the
-client and releases whatever it had prepared for it.
+subscriber and releases whatever it had prepared for that ref.

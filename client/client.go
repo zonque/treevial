@@ -1,8 +1,12 @@
 // Package client is the receiving side of treevial. It dials the server and
 // keeps one connection open for the lifetime of the process, but never asks for
-// anything: it names itself in the opening message and then simply interprets
-// whatever the server pushes, on the fly, without writing a byte to disk. The
-// ref it is served follows from its own ID.
+// anything after the first message: it names the head it wants and then simply
+// interprets whatever the server pushes, on the fly, without writing a byte to
+// disk.
+//
+// The head is built here, from the client's own ID, and the server takes it as
+// it is given. Which ref an ID maps to is therefore this package's business —
+// see [RefFor].
 //
 // A client repository depends on this package and on
 // [github.com/zonque/treevial/receive]; it does not need the server side at
@@ -33,9 +37,10 @@ const keepalivePeriod = 30 * time.Second
 // points at, what it pointed at before, how many objects the server had to
 // send, and the accumulated graph the client has interpreted so far.
 type Update struct {
-	// ClientID this client identified itself with.
+	// ClientID this client was created with.
 	ClientID string
-	// Ref the update arrived for, which follows from ClientID.
+	// Ref the update arrived for: the head this client asked the server
+	// for, built from ClientID.
 	Ref  string
 	Hash plumbing.Hash
 	// Previous is the hash this subscription was at before the update, or
@@ -94,17 +99,18 @@ func (c *Client) setErr(err error) {
 	}
 }
 
-// Subscribe registers under clientID as a client holding nothing, and returns a
-// channel of updates the server pushes. The ID decides which ref the server
-// serves, and the server prepares that data as the client connects.
+// Subscribe subscribes to the head belonging to clientID, as a client holding
+// nothing, and returns a channel of updates the server pushes. The server
+// prepares that data as the client connects.
 func (c *Client) Subscribe(ctx context.Context, clientID string) (<-chan Update, error) {
 	return c.Resume(ctx, clientID, plumbing.ZeroHash, receive.NewGraph())
 }
 
-// Resume registers under clientID declaring that the client already holds the
-// tree at synced, whose objects are in graph. That single hash is the whole of
-// the client's state: the server sends only the difference between it and the
-// ref. Later updates accumulate into the same graph.
+// Resume subscribes to the head belonging to clientID, declaring that the
+// client already holds the tree at synced, whose objects are in graph. That
+// single hash is the whole of the client's state: the server sends only the
+// difference between it and the head. Later updates accumulate into the same
+// graph.
 //
 // Cancelling ctx closes the connection, which ends the subscription and closes
 // the channel.
@@ -114,13 +120,15 @@ func (c *Client) Resume(
 	synced plumbing.Hash,
 	graph *receive.Graph,
 ) (<-chan Update, error) {
-	// Checked here as well as on the server, so an unusable ID fails
-	// without a round trip; the rule itself lives in one place.
-	if err := treevial.ValidateID(clientID); err != nil {
+	// The ID is what a ref is built from, so it is checked here, before it
+	// reaches anything that interpolates it.
+	if err := ValidateID(clientID); err != nil {
 		return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
 	}
 
-	if err := c.conn.WriteRegister(clientID, synced); err != nil {
+	ref := RefFor(clientID)
+
+	if err := c.conn.WriteRegister(ref, synced); err != nil {
 		return nil, err
 	}
 
@@ -141,7 +149,7 @@ func (c *Client) Resume(
 		defer close(updates)
 		defer close(done)
 
-		if err := c.consume(ctx, clientID, synced, graph, updates); err != nil {
+		if err := c.consume(ctx, clientID, ref, synced, graph, updates); err != nil {
 			c.setErr(err)
 		}
 	}()
@@ -155,6 +163,7 @@ func (c *Client) Resume(
 func (c *Client) consume(
 	ctx context.Context,
 	clientID string,
+	ref string,
 	synced plumbing.Hash,
 	graph *receive.Graph,
 	updates chan<- Update,
@@ -196,7 +205,7 @@ func (c *Client) consume(
 		select {
 		case updates <- Update{
 			ClientID:    clientID,
-			Ref:         treevial.RefFor(clientID),
+			Ref:         ref,
 			Hash:        msg.Hash,
 			Previous:    previous,
 			ObjectCount: msg.ObjectCount,

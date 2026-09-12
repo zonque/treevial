@@ -50,8 +50,9 @@ func (k ClientKind) String() string {
 // ClientMessage is a message from client to server.
 type ClientMessage struct {
 	Kind ClientKind
-	// ClientID is set on a Register.
-	ClientID string
+	// Ref is the head the client asked for, set on a Register. It is
+	// carried verbatim: what the server makes of it is its own business.
+	Ref string
 	// Hash is the state the client holds on a Register, or the state it has
 	// reached on an Ack.
 	Hash plumbing.Hash
@@ -100,10 +101,10 @@ func (c *Conn) WriteLine(line string) error {
 	return c.enc.Encodef("%s\n", line)
 }
 
-// WriteRegister opens a subscription, stating which tree the client already
-// holds. The zero hash means it holds nothing.
-func (c *Conn) WriteRegister(clientID string, synced plumbing.Hash) error {
-	return c.WriteLine(fmt.Sprintf("register %s %s", clientID, synced))
+// WriteRegister opens a subscription to ref, stating which tree the client
+// already holds. The zero hash means it holds nothing.
+func (c *Conn) WriteRegister(ref string, synced plumbing.Hash) error {
+	return c.WriteLine(fmt.Sprintf("register %s %s", ref, synced))
 }
 
 // WriteAck confirms that everything up to hash has been interpreted.
@@ -123,7 +124,8 @@ func (c *Conn) WriteError(e *treevial.Error) error {
 }
 
 // readLine reads the next pkt-line as text. A flush-pkt where a message was
-// expected is a protocol error.
+// expected is a protocol error; a closed connection is io.EOF, which is how a
+// subscription ends rather than something to report back.
 func (c *Conn) readLine() (string, error) {
 	if !c.scan.Scan() {
 		if err := c.scan.Err(); err != nil {
@@ -135,7 +137,7 @@ func (c *Conn) readLine() (string, error) {
 
 	line := strings.TrimSuffix(string(c.scan.Bytes()), "\n")
 	if line == "" {
-		return "", fmt.Errorf("wire: empty line")
+		return "", treevial.Errorf(treevial.CodeInvalid, "wire: empty line")
 	}
 
 	return line, nil
@@ -153,7 +155,7 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 	switch fields[0] {
 	case "register":
 		if len(fields) != 3 {
-			return ClientMessage{}, fmt.Errorf("wire: malformed register line %q", line)
+			return ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed register line %q", line)
 		}
 
 		hash, err := parseHash(fields[2])
@@ -161,11 +163,11 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 			return ClientMessage{}, err
 		}
 
-		return ClientMessage{Kind: Register, ClientID: fields[1], Hash: hash}, nil
+		return ClientMessage{Kind: Register, Ref: fields[1], Hash: hash}, nil
 
 	case "ack":
 		if len(fields) != 2 {
-			return ClientMessage{}, fmt.Errorf("wire: malformed ack line %q", line)
+			return ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed ack line %q", line)
 		}
 
 		hash, err := parseHash(fields[1])
@@ -176,7 +178,7 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 		return ClientMessage{Kind: Ack, Hash: hash}, nil
 
 	default:
-		return ClientMessage{}, fmt.Errorf("wire: unknown client message %q", fields[0])
+		return ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: unknown client message %q", fields[0])
 	}
 }
 
@@ -196,7 +198,7 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 	switch fields[0] {
 	case "update":
 		if len(fields) != 3 {
-			return ServerMessage{}, fmt.Errorf("wire: malformed update line %q", line)
+			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
 		}
 
 		hash, err := parseHash(fields[1])
@@ -206,14 +208,14 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 
 		objects, err := strconv.Atoi(fields[2])
 		if err != nil {
-			return ServerMessage{}, fmt.Errorf("wire: malformed object count in %q", line)
+			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed object count in %q", line)
 		}
 
 		return ServerMessage{Kind: Update, Hash: hash, ObjectCount: objects}, nil
 
 	case "error":
 		if len(fields) < 2 {
-			return ServerMessage{}, fmt.Errorf("wire: malformed error line %q", line)
+			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed error line %q", line)
 		}
 
 		return ServerMessage{}, &treevial.Error{
@@ -222,19 +224,19 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 		}
 
 	default:
-		return ServerMessage{}, fmt.Errorf("wire: unknown server message %q", fields[0])
+		return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: unknown server message %q", fields[0])
 	}
 }
 
 // parseHash accepts the 40 hex digits a hash travels as.
 func parseHash(s string) (plumbing.Hash, error) {
 	if len(s) != 40 {
-		return plumbing.ZeroHash, fmt.Errorf("wire: %q is not a hash", s)
+		return plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid, "wire: %q is not a hash", s)
 	}
 
 	hash := plumbing.NewHash(s)
 	if hash.IsZero() && s != plumbing.ZeroHash.String() {
-		return plumbing.ZeroHash, fmt.Errorf("wire: %q is not a hash", s)
+		return plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid, "wire: %q is not a hash", s)
 	}
 
 	return hash, nil

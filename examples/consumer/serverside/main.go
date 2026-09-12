@@ -13,7 +13,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/server"
 	"github.com/zonque/treevial/structtree"
@@ -21,17 +20,18 @@ import (
 	"github.com/zonque/treevial-consumer-example/settings"
 )
 
-// provider hands each client settings of its own, built when it connects and
-// dropped when it leaves.
+// provider hands each ref settings of its own, built when a client subscribes
+// to it and dropped when that client leaves.
 type provider struct {
 	mu   sync.Mutex
 	held map[string]*settings.Settings
 }
 
-// Prepare implements server.Provider.
-func (p *provider) Prepare(clientID string) (*objects.Store, plumbing.Hash, error) {
+// Prepare implements server.Provider. The ref arrives exactly as the client
+// asked for it; what to make of it is this provider's own business.
+func (p *provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	s := &settings.Settings{
-		Owner:   settings.Owner{Name: clientID, Team: "field-ops"},
+		Owner:   settings.Owner{Name: ref, Team: "field-ops"},
 		Display: settings.Display{Brightness: 80, Rotation: 0},
 		Seen:    timestamppb.New(time.Unix(1700000000, 0)),
 	}
@@ -44,21 +44,21 @@ func (p *provider) Prepare(clientID string) (*objects.Store, plumbing.Hash, erro
 	}
 
 	p.mu.Lock()
-	p.held[clientID] = s
+	p.held[ref] = s
 	p.mu.Unlock()
 
-	log.Printf("prepared %s -> %s", treevial.RefFor(clientID), root)
+	log.Printf("prepared %s -> %s", ref, root)
 
 	return store, root, nil
 }
 
 // Release implements server.Provider.
-func (p *provider) Release(clientID string) {
+func (p *provider) Release(ref string) {
 	p.mu.Lock()
-	delete(p.held, clientID)
+	delete(p.held, ref)
 	p.mu.Unlock()
 
-	log.Printf("released %s", clientID)
+	log.Printf("released %s", ref)
 }
 
 func main() {

@@ -68,17 +68,18 @@ type Audio struct {
 	Delay *durationpb.Duration
 }
 
-// Example returns a configuration personalised for one client, so two clients
-// never hold the same tree.
-func Example(clientID string) *Config {
+// Example returns a configuration personalised with label — whatever the
+// provider chose to key on, usually the ref — so two subscribers never hold the
+// same tree.
+func Example(label string) *Config {
 	return &Config{
 		Device: Device{
-			Name:     clientID,
-			Serial:   fmt.Sprintf("SN-%s-0001", clientID),
+			Name:     label,
+			Serial:   fmt.Sprintf("SN-%s-0001", label),
 			Location: Location{Room: "hall-a", Row: 3},
 		},
 		Network: Network{
-			Hostname: clientID + ".local",
+			Hostname: label + ".local",
 			Primary:  &Interface{Address: "10.0.0.7", MTU: 1500},
 			DNS:      []string{"10.0.0.1", "10.0.0.2"},
 		},
@@ -89,8 +90,8 @@ func Example(clientID string) *Config {
 	}
 }
 
-// BuildTree stores the example configuration for a client and returns the root
+// BuildTree stores the example configuration for label and returns the root
 // tree hash.
-func BuildTree(store *objects.Store, clientID string) (plumbing.Hash, error) {
-	return structtree.Build(store, Example(clientID))
+func BuildTree(store *objects.Store, label string) (plumbing.Hash, error) {
+	return structtree.Build(store, Example(label))
 }

@@ -26,7 +26,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if prepared, _ := h.provider.counts("printer-7"); prepared != 0 {
+	if prepared, _ := h.provider.counts(client.RefFor("printer-7")); prepared != 0 {
 		t.Fatalf("data was prepared before the client connected")
 	}
 
@@ -34,7 +34,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 
 	u := nextUpdate(t, updates)
 
-	if prepared, _ := h.provider.counts("printer-7"); prepared != 1 {
+	if prepared, _ := h.provider.counts(client.RefFor("printer-7")); prepared != 1 {
 		t.Errorf("provider prepared data %d times, want once", prepared)
 	}
 	if want := 16; u.ObjectCount != want {
@@ -68,14 +68,14 @@ func TestClientIsServedAtItsOwnRef(t *testing.T) {
 		t.Errorf("client reports ID %q, want %q", u.ClientID, "printer-7")
 	}
 
-	clients := h.server.Clients()
+	clients := h.server.Subscribers()
 	if len(clients) != 1 {
 		t.Fatalf("got %d clients, want 1", len(clients))
 	}
 	if clients[0].Ref != want {
 		t.Errorf("server publishes at %q, want %q", clients[0].Ref, want)
 	}
-	if clients[0].Ref != treevial.RefFor("printer-7") {
+	if clients[0].Ref != client.RefFor("printer-7") {
 		t.Errorf("server ref %q disagrees with clientref.For", clients[0].Ref)
 	}
 }
@@ -106,11 +106,13 @@ func TestEachClientGetsItsOwnData(t *testing.T) {
 		t.Fatalf("Leaves: %v", err)
 	}
 
-	// Each client's struct is personalised, so the leaf differs.
-	if got, want := string(leavesA["Device/Name"]), `"printer-7"`; got != want {
+	// The provider labels each struct with the ref it was handed, so the
+	// leaf shows what the server was actually asked for — verbatim, with no
+	// client ID anywhere in sight.
+	if got, want := string(leavesA["Device/Name"]), `"`+client.RefFor("printer-7")+`"`; got != want {
 		t.Errorf("printer-7 leaf: got %s, want %s", got, want)
 	}
-	if got, want := string(leavesB["Device/Name"]), `"printer-8"`; got != want {
+	if got, want := string(leavesB["Device/Name"]), `"`+client.RefFor("printer-8")+`"`; got != want {
 		t.Errorf("printer-8 leaf: got %s, want %s", got, want)
 	}
 }
@@ -127,15 +129,15 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 
 	// The server must know the client is caught up before it can compute a
 	// minimal second push.
-	waitForSync(t, h.server, "printer-7", first.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), first.Hash)
 
-	store := h.provider.store(t, "printer-7")
+	store := h.provider.store(t, client.RefFor("printer-7"))
 
 	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
-	if err := h.server.SetHead("printer-7", v2); err != nil {
+	if err := h.server.SetHead(client.RefFor("printer-7"), v2); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
 
@@ -174,9 +176,9 @@ func TestServerTracksWhenAClientHasSynced(t *testing.T) {
 	_, updates := h.subscribe(t, ctx, "printer-7")
 
 	u := nextUpdate(t, updates)
-	waitForSync(t, h.server, "printer-7", u.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), u.Hash)
 
-	clients := h.server.Clients()
+	clients := h.server.Subscribers()
 	if len(clients) != 1 {
 		t.Fatalf("got %d clients, want 1", len(clients))
 	}
@@ -197,9 +199,9 @@ func TestDisconnectReleasesTheClientsResources(t *testing.T) {
 	cli, updates := h.subscribe(t, ctx, "printer-7")
 
 	u := nextUpdate(t, updates)
-	waitForSync(t, h.server, "printer-7", u.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), u.Hash)
 
-	if _, released := h.provider.counts("printer-7"); released != 0 {
+	if _, released := h.provider.counts(client.RefFor("printer-7")); released != 0 {
 		t.Fatal("resources were released while the client was still connected")
 	}
 
@@ -208,16 +210,16 @@ func TestDisconnectReleasesTheClientsResources(t *testing.T) {
 	}
 
 	eventually(t, "the server to notice the disconnect", func() bool {
-		return len(h.server.Clients()) == 0
+		return len(h.server.Subscribers()) == 0
 	})
 
 	eventually(t, "the provider to release the client's resources", func() bool {
-		_, released := h.provider.counts("printer-7")
+		_, released := h.provider.counts(client.RefFor("printer-7"))
 
 		return released == 1
 	})
 
-	if h.server.Head("printer-7") != plumbing.ZeroHash {
+	if h.server.Head(client.RefFor("printer-7")) != plumbing.ZeroHash {
 		t.Error("the disconnected client's ref is still published")
 	}
 }
@@ -239,14 +241,14 @@ func TestClientReconnectingIsPreparedAgain(t *testing.T) {
 
 	cli, updates := h.subscribe(t, ctx, "printer-7")
 	first := nextUpdate(t, updates)
-	waitForSync(t, h.server, "printer-7", first.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), first.Hash)
 
 	if err := cli.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
 	eventually(t, "the server to notice the disconnect", func() bool {
-		return len(h.server.Clients()) == 0
+		return len(h.server.Subscribers()) == 0
 	})
 
 	// Reconnecting under the same ID gets freshly prepared data, and the
@@ -270,7 +272,7 @@ func TestClientReconnectingIsPreparedAgain(t *testing.T) {
 		t.Errorf("update hash %s, want %s", second.Hash, first.Hash)
 	}
 
-	if prepared, _ := h.provider.counts("printer-7"); prepared != 2 {
+	if prepared, _ := h.provider.counts(client.RefFor("printer-7")); prepared != 2 {
 		t.Errorf("provider prepared data %d times, want twice", prepared)
 	}
 }
@@ -407,8 +409,8 @@ func TestClientRebuildsTheStructTheServerPublished(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	if got.Device.Name != "printer-7" {
-		t.Errorf("Device.Name: got %q, want %q", got.Device.Name, "printer-7")
+	if got.Device.Name != client.RefFor("printer-7") {
+		t.Errorf("Device.Name: got %q, want %q", got.Device.Name, client.RefFor("printer-7"))
 	}
 	if got.Network.Primary == nil || got.Network.Primary.MTU != 1500 {
 		t.Errorf("Network.Primary: got %+v, want MTU 1500", got.Network.Primary)
@@ -436,20 +438,20 @@ func TestClientStructFollowsALaterPush(t *testing.T) {
 	_, updates := h.subscribe(t, ctx, "printer-7")
 
 	first := nextUpdate(t, updates)
-	waitForSync(t, h.server, "printer-7", first.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), first.Hash)
 
 	var cfg demo.Config
 	if err := applyUpdate(t, &cfg, first); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	store := h.provider.store(t, "printer-7")
+	store := h.provider.store(t, client.RefFor("printer-7"))
 
 	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
-	if err := h.server.SetHead("printer-7", next); err != nil {
+	if err := h.server.SetHead(client.RefFor("printer-7"), next); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
 
@@ -464,7 +466,7 @@ func TestClientStructFollowsALaterPush(t *testing.T) {
 	if cfg.Network.Primary.MTU != 9000 {
 		t.Errorf("MTU: got %d, want 9000", cfg.Network.Primary.MTU)
 	}
-	if cfg.Device.Name != "printer-7" {
+	if cfg.Device.Name != client.RefFor("printer-7") {
 		t.Errorf("an untouched field changed: %q", cfg.Device.Name)
 	}
 	if rebuild(t, &cfg) != second.Hash {
@@ -518,15 +520,15 @@ func TestClientFollowsPushesIncrementally(t *testing.T) {
 		t.Fatal("the first update did not produce the whole value")
 	}
 
-	waitForSync(t, h.server, "printer-7", first.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), first.Hash)
 
-	store := h.provider.store(t, "printer-7")
+	store := h.provider.store(t, client.RefFor("printer-7"))
 
 	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
-	if err := h.server.SetHead("printer-7", next); err != nil {
+	if err := h.server.SetHead(client.RefFor("printer-7"), next); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
 
@@ -541,13 +543,86 @@ func TestClientFollowsPushesIncrementally(t *testing.T) {
 	}
 	// Fields under subtrees that did not move were never decoded again,
 	// and are still right.
-	if config.Device.Name != "printer-7" {
-		t.Errorf("Device.Name: got %q, want %q", config.Device.Name, "printer-7")
+	if config.Device.Name != client.RefFor("printer-7") {
+		t.Errorf("Device.Name: got %q, want %q", config.Device.Name, client.RefFor("printer-7"))
 	}
 	if config.Audio.Gain != -6.5 {
 		t.Errorf("Audio.Gain: got %v, want -6.5", config.Audio.Gain)
 	}
 	if rebuild(t, &config) != second.Hash {
 		t.Errorf("incremental application does not match the published %s", second.Hash)
+	}
+}
+
+func TestServerRefusesARefItCannotUse(t *testing.T) {
+	h := newHarness(t)
+
+	// The client builds a ref from its ID and would never send these, so
+	// the wire package is used directly: this is the server's own guard on
+	// text it takes verbatim.
+	for _, ref := range []string{
+		"printer-7",               // not a ref at all
+		"refs/heads/../../escape", // climbs out of the namespace
+		"refs/heads/has space",    // not a usable ref name
+	} {
+		nc, err := net.Dial("tcp", h.addr)
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+
+		conn := wire.NewConn(nc)
+
+		if err := conn.WriteRegister(ref, plumbing.ZeroHash); err != nil {
+			t.Fatalf("WriteRegister: %v", err)
+		}
+
+		_, err = conn.ReadServerMessage()
+		if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+			t.Errorf("ref %q: got error %v (code %s), want %s", ref, err, got, treevial.CodeInvalid)
+		}
+
+		if prepared, _ := h.provider.counts(ref); prepared != 0 {
+			t.Errorf("ref %q: the server prepared data for it", ref)
+		}
+
+		nc.Close()
+	}
+}
+
+func TestServerServesAnyWellFormedRefItIsGiven(t *testing.T) {
+	h := newHarness(t)
+
+	// Nothing about refs/heads/<id>/config is special to the server: it
+	// serves whatever ref a client names, because it derives nothing.
+	ref := "refs/devices/hall-a/row-3/seat-9"
+
+	nc, err := net.Dial("tcp", h.addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer nc.Close()
+
+	conn := wire.NewConn(nc)
+
+	if err := conn.WriteRegister(ref, plumbing.ZeroHash); err != nil {
+		t.Fatalf("WriteRegister: %v", err)
+	}
+
+	msg, err := conn.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+
+	if msg.ObjectCount != 16 {
+		t.Errorf("pushed %d objects, want 16", msg.ObjectCount)
+	}
+
+	if prepared, _ := h.provider.counts(ref); prepared != 1 {
+		t.Errorf("provider prepared %q %d times, want once", ref, prepared)
+	}
+
+	subs := h.server.Subscribers()
+	if len(subs) != 1 || subs[0].Ref != ref {
+		t.Errorf("subscribers %+v, want one at %q", subs, ref)
 	}
 }

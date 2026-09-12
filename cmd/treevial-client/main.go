@@ -19,7 +19,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/client"
 	"github.com/zonque/treevial/internal/demo"
 	"github.com/zonque/treevial/receive"
@@ -50,7 +49,7 @@ func run(addr, clientID string) error {
 	}
 	defer cli.Close()
 
-	log.Printf("subscribing as %q to %s, expecting %s", clientID, addr, treevial.RefFor(clientID))
+	log.Printf("subscribing as %q to %s, expecting %s", clientID, addr, client.RefFor(clientID))
 
 	updates, err := cli.Subscribe(ctx, clientID)
 	if err != nil {

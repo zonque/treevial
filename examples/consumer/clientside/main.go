@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/client"
 	"github.com/zonque/treevial/structtree"
 
@@ -27,7 +26,7 @@ func main() {
 	id := flag.String("id", "", "client ID (required)")
 	flag.Parse()
 
-	if err := treevial.ValidateID(*id); err != nil {
+	if err := client.ValidateID(*id); err != nil {
 		log.Fatal(err)
 	}
 
@@ -40,7 +39,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	log.Printf("subscribing as %q, expecting %s", *id, treevial.RefFor(*id))
+	log.Printf("subscribing as %q, expecting %s", *id, client.RefFor(*id))
 
 	updates, err := conn.Subscribe(ctx, *id)
 	if err != nil {

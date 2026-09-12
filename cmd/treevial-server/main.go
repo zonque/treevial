@@ -1,8 +1,7 @@
-// Command treevial-server synchronises a deeply nested Go struct to each
-// client. A client identifies itself in the treevial-client-id request header;
-// the server builds that client's configuration on connect, walks it with
-// structtree into a git tree published at refs/heads/<client-id>/config, and
-// pushes it down the stream. A few seconds after a client has synced it
+// Command treevial-server synchronises a deeply nested Go struct per ref. A
+// client names the head it wants; the server takes that ref verbatim, builds
+// its configuration on connect, walks it with structtree into a git tree, and
+// pushes it down the connection. A few seconds after a client has synced it
 // changes one deeply nested field and pushes again, which is where the
 // long-lived connection earns its keep: the second transfer costs four
 // objects, not sixteen.
@@ -20,7 +19,6 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/server"
 )
 
@@ -46,7 +44,7 @@ func run(addr string, mutate time.Duration) error {
 	log.Printf("listening on %s; data is prepared per client on connect", lis.Addr())
 
 	if mutate > 0 {
-		go mutateSyncedClients(srv, provider, mutate)
+		go mutateSyncedRefs(srv, provider, mutate)
 	}
 
 	go watchSignals(srv)
@@ -54,22 +52,21 @@ func run(addr string, mutate time.Duration) error {
 	return srv.Serve(lis)
 }
 
-// mutateSyncedClients watches for clients that have caught up and, once each
+// mutateSyncedRefs watches for subscribers that have caught up and, once each
 // has, changes a field of its configuration and moves its ref, which makes the
-// server push again of its own accord. One change per client is enough to show
-// it.
-func mutateSyncedClients(srv *server.Server, provider *demoProvider, after time.Duration) {
+// server push again of its own accord. One change per ref is enough to show it.
+func mutateSyncedRefs(srv *server.Server, provider *demoProvider, after time.Duration) {
 	done := map[string]bool{}
 
 	for range time.Tick(50 * time.Millisecond) {
-		for _, c := range srv.Clients() {
-			if done[c.ID] || c.Synced.IsZero() || c.Synced != c.Head {
+		for _, sub := range srv.Subscribers() {
+			if done[sub.Ref] || sub.Synced.IsZero() || sub.Synced != sub.Head {
 				continue
 			}
 
-			done[c.ID] = true
+			done[sub.Ref] = true
 
-			go mutateOnce(srv, provider, c.ID, c.Head, after)
+			go mutateOnce(srv, provider, sub.Ref, sub.Head, after)
 		}
 	}
 }
@@ -77,24 +74,24 @@ func mutateSyncedClients(srv *server.Server, provider *demoProvider, after time.
 func mutateOnce(
 	srv *server.Server,
 	provider *demoProvider,
-	clientID string,
+	ref string,
 	head plumbing.Hash,
 	after time.Duration,
 ) {
-	log.Printf("[%s] synced at %s; setting Network.Primary.MTU in %s", clientID, head, after)
+	log.Printf("[%s] synced at %s; setting Network.Primary.MTU in %s", ref, head, after)
 	time.Sleep(after)
 
-	next, err := provider.Retune(clientID)
+	next, err := provider.Retune(ref)
 	if err != nil {
-		log.Printf("[%s] retune: %v", clientID, err)
+		log.Printf("[%s] retune: %v", ref, err)
 
 		return
 	}
 
-	log.Printf("[%s] moving %s -> %s and pushing", clientID, treevial.RefFor(clientID), next)
+	log.Printf("[%s] moving -> %s and pushing", ref, next)
 
-	if err := srv.SetHead(clientID, next); err != nil {
-		log.Printf("[%s] set head: %v", clientID, err)
+	if err := srv.SetHead(ref, next); err != nil {
+		log.Printf("[%s] set head: %v", ref, err)
 	}
 }
 

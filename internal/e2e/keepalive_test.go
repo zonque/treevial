@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/zonque/treevial/client"
 )
 
 // TestSubscriptionSurvivesAQuietStretch checks that a subscription left idle is
@@ -20,7 +22,7 @@ func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	c, updates := h.subscribe(t, ctx, "printer-7")
 
 	first := nextUpdate(t, updates)
-	waitForSync(t, h.server, "printer-7", first.Hash)
+	waitForSync(t, h.server, client.RefFor("printer-7"), first.Hash)
 
 	// Nothing crosses the connection for a while.
 	time.Sleep(2 * time.Second)
@@ -30,13 +32,13 @@ func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	}
 
 	// The connection must still be usable for an unprompted push.
-	store := h.provider.store(t, "printer-7")
+	store := h.provider.store(t, client.RefFor("printer-7"))
 
 	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
-	if err := h.server.SetHead("printer-7", v2); err != nil {
+	if err := h.server.SetHead(client.RefFor("printer-7"), v2); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
 

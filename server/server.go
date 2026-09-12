@@ -1,8 +1,8 @@
 // Package server is the pushing side of treevial. It listens for clients, but
 // the direction of the object flow is reversed from git's usual arrangement:
-// once a client has identified itself, the server prepares that client's
+// once a client has named the head it wants, the server prepares that ref's
 // objects and sends them down the long-lived connection on its own initiative,
-// whenever the client's ref moves.
+// whenever the ref moves.
 //
 // A server repository depends on this package and on
 // [github.com/zonque/treevial/objects]; it does not need the client side at
@@ -23,37 +23,38 @@ import (
 	"github.com/zonque/treevial/objects"
 )
 
-// Provider supplies and disposes of the objects belonging to one client. The
-// server owns neither: it asks for a client's data when that client connects
-// and hands it back when the client goes away.
+// Provider supplies and disposes of the objects behind one ref. The server owns
+// neither: it asks for a ref's data when a client subscribes to it, and hands
+// it back when that client goes away.
+//
+// The ref is whatever the client asked for, passed on unchanged. What it means
+// — a device, a tenant, a configuration — is the provider's business; the
+// server only checks that it is a usable ref name.
 type Provider interface {
-	// Prepare builds the objects for a newly connected client and returns
-	// the store holding them together with the hash its ref points at.
-	Prepare(clientID string) (*objects.Store, plumbing.Hash, error)
-	// Release is called once, after the client has disconnected, so
+	// Prepare builds the objects behind ref and returns the store holding
+	// them together with the hash the ref points at.
+	Prepare(ref string) (*objects.Store, plumbing.Hash, error)
+	// Release is called once, after the subscriber has disconnected, so
 	// whatever Prepare set up can be dropped.
-	Release(clientID string)
+	Release(ref string)
 }
 
-// ClientState is a snapshot of what the server knows about one connected
-// client.
-type ClientState struct {
-	// ID the client identified itself with.
-	ID string
-	// Ref its data is published at.
+// Subscription is a snapshot of what the server knows about one connected
+// subscriber.
+type Subscription struct {
+	// Ref the subscriber asked for, verbatim.
 	Ref string
 	// Head is the hash that ref points at.
 	Head plumbing.Hash
-	// Synced is the hash the client has confirmed it fully interpreted, or
-	// the zero hash if it has not caught up yet.
+	// Synced is the hash the subscriber has confirmed it fully interpreted,
+	// or the zero hash if it has not caught up yet.
 	Synced plumbing.Hash
 }
 
-// client is one connected client. Its whole state is the hash it last
+// subscriber is one connected client. Its whole state is the hash it last
 // acknowledged: holding a tree means holding everything under it, so a single
-// hash is enough for the server to work out what the client still needs.
-type client struct {
-	id     string
+// hash is enough for the server to work out what it still needs.
+type subscriber struct {
 	ref    string
 	store  *objects.Store
 	notify chan plumbing.Hash
@@ -63,14 +64,14 @@ type client struct {
 	synced plumbing.Hash
 }
 
-func (c *client) state() ClientState {
+func (c *subscriber) state() Subscription {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return ClientState{ID: c.id, Ref: c.ref, Head: c.head, Synced: c.synced}
+	return Subscription{Ref: c.ref, Head: c.head, Synced: c.synced}
 }
 
-func (c *client) held() plumbing.Hash {
+func (c *subscriber) held() plumbing.Hash {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -78,14 +79,14 @@ func (c *client) held() plumbing.Hash {
 }
 
 // setHead moves the client's ref.
-func (c *client) setHead(hash plumbing.Hash) {
+func (c *subscriber) setHead(hash plumbing.Hash) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.head = hash
 }
 
-func (c *client) currentHead() plumbing.Hash {
+func (c *subscriber) currentHead() plumbing.Hash {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -93,7 +94,7 @@ func (c *client) currentHead() plumbing.Hash {
 }
 
 // ack records that the client interpreted everything up to hash.
-func (c *client) ack(hash plumbing.Hash) {
+func (c *subscriber) ack(hash plumbing.Hash) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -109,19 +110,19 @@ const keepalivePeriod = 30 * time.Second
 type Server struct {
 	provider Provider
 
-	mu      sync.Mutex
-	clients map[string]*client
-	conns   map[*wire.Conn]struct{}
-	lis     net.Listener
-	stopped bool
+	mu          sync.Mutex
+	subscribers map[string]*subscriber
+	conns       map[*wire.Conn]struct{}
+	lis         net.Listener
+	stopped     bool
 }
 
 // New returns a server that asks provider for each client's objects.
 func New(provider Provider) *Server {
 	return &Server{
-		provider: provider,
-		clients:  map[string]*client{},
-		conns:    map[*wire.Conn]struct{}{},
+		provider:    provider,
+		subscribers: map[string]*subscriber{},
+		conns:       map[*wire.Conn]struct{}{},
 	}
 }
 
@@ -185,15 +186,15 @@ func (s *Server) Stop() {
 	}
 }
 
-// SetHead points a client's ref at hash and immediately wakes it. This is the
+// SetHead points ref at hash and immediately wakes its subscriber. This is the
 // trigger for a push: nothing is requested by the client.
-func (s *Server) SetHead(clientID string, hash plumbing.Hash) error {
+func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 	s.mu.Lock()
-	c, ok := s.clients[clientID]
+	c, ok := s.subscribers[ref]
 	s.mu.Unlock()
 
 	if !ok || c == nil {
-		return fmt.Errorf("no client %q is connected", clientID)
+		return fmt.Errorf("nobody is subscribed to %q", ref)
 	}
 
 	c.setHead(hash)
@@ -208,11 +209,11 @@ func (s *Server) SetHead(clientID string, hash plumbing.Hash) error {
 	return nil
 }
 
-// Head returns the hash a client's ref points at, or the zero hash if no such
-// client is connected.
-func (s *Server) Head(clientID string) plumbing.Hash {
+// Head returns the hash ref points at, or the zero hash if nobody is
+// subscribed to it.
+func (s *Server) Head(ref string) plumbing.Hash {
 	s.mu.Lock()
-	c, ok := s.clients[clientID]
+	c, ok := s.subscribers[ref]
 	s.mu.Unlock()
 
 	if !ok || c == nil {
@@ -222,12 +223,12 @@ func (s *Server) Head(clientID string) plumbing.Hash {
 	return c.currentHead()
 }
 
-// Clients snapshots the connected clients.
-func (s *Server) Clients() []ClientState {
+// Subscribers snapshots the connected subscribers.
+func (s *Server) Subscribers() []Subscription {
 	s.mu.Lock()
-	connected := make([]*client, 0, len(s.clients))
-	for _, c := range s.clients {
-		// A nil entry is an ID claimed by a connection whose data is
+	connected := make([]*subscriber, 0, len(s.subscribers))
+	for _, c := range s.subscribers {
+		// A nil entry is a ref claimed by a connection whose data is
 		// still being prepared.
 		if c != nil {
 			connected = append(connected, c)
@@ -235,7 +236,7 @@ func (s *Server) Clients() []ClientState {
 	}
 	s.mu.Unlock()
 
-	out := make([]ClientState, 0, len(connected))
+	out := make([]Subscription, 0, len(connected))
 	for _, c := range connected {
 		out = append(out, c.state())
 	}
@@ -280,12 +281,12 @@ func (s *Server) handle(nc net.Conn) {
 // serve registers the client, pushes what it is missing, and then stays put,
 // pushing again every time its ref moves.
 func (s *Server) serve(conn *wire.Conn) error {
-	clientID, synced, err := register(conn)
+	ref, synced, err := register(conn)
 	if err != nil {
 		return err
 	}
 
-	c, err := s.connect(clientID, synced)
+	c, err := s.connect(ref, synced)
 	if err != nil {
 		return err
 	}
@@ -316,8 +317,8 @@ func (s *Server) serve(conn *wire.Conn) error {
 	}
 }
 
-// register reads the opening message, in which the client names itself and
-// states what it already holds.
+// register reads the opening message, in which the client names the head it
+// wants and states what it already holds.
 func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 	msg, err := conn.ReadClientMessage()
 	if err != nil {
@@ -329,44 +330,43 @@ func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 			"first message must be a registration")
 	}
 
-	// The ID is interpolated into a ref path, so it is checked here, before
-	// it reaches anything that builds a path from it.
-	if err := treevial.ValidateID(msg.ClientID); err != nil {
+	// The ref is taken as it was sent — the server derives nothing from it
+	// — but it still has to be a ref, since the provider will key on it.
+	if err := treevial.ValidateRef(msg.Ref); err != nil {
 		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid, "%v", err)
 	}
 
-	return msg.ClientID, msg.Hash, nil
+	return msg.Ref, msg.Hash, nil
 }
 
-// connect prepares the client's objects and registers it. Only one connection
-// per client ID is served at a time, so a client's prepared data has exactly
-// one owner.
-func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error) {
+// connect prepares the ref's objects and registers the subscriber. Only one
+// connection per ref is served at a time, so prepared data has exactly one
+// owner.
+func (s *Server) connect(ref string, synced plumbing.Hash) (*subscriber, error) {
 	s.mu.Lock()
-	if _, taken := s.clients[clientID]; taken {
+	if _, taken := s.subscribers[ref]; taken {
 		s.mu.Unlock()
 
 		return nil, treevial.Errorf(treevial.CodeAlreadyExists,
-			"client %q is already connected", clientID)
+			"%q already has a subscriber", ref)
 	}
-	// Claim the ID before preparing, so a second connection racing this one
-	// cannot have data prepared for it too.
-	s.clients[clientID] = nil
+	// Claim the ref before preparing, so a second connection racing this
+	// one cannot have data prepared for it too.
+	s.subscribers[ref] = nil
 	s.mu.Unlock()
 
-	store, head, err := s.provider.Prepare(clientID)
+	store, head, err := s.provider.Prepare(ref)
 	if err != nil {
 		s.mu.Lock()
-		delete(s.clients, clientID)
+		delete(s.subscribers, ref)
 		s.mu.Unlock()
 
 		return nil, treevial.Errorf(treevial.CodeInternal,
-			"prepare data for %q: %v", clientID, err)
+			"prepare data for %q: %v", ref, err)
 	}
 
-	c := &client{
-		id:     clientID,
-		ref:    treevial.RefFor(clientID),
+	c := &subscriber{
+		ref:    ref,
 		store:  store,
 		notify: make(chan plumbing.Hash, 1),
 		head:   head,
@@ -374,28 +374,29 @@ func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error)
 	}
 
 	s.mu.Lock()
-	s.clients[clientID] = c
+	s.subscribers[ref] = c
 	s.mu.Unlock()
 
 	return c, nil
 }
 
-// disconnect is the other half of connect: it runs when a client's connection
-// ends, however it ended, and gives the provider its chance to let go.
-func (s *Server) disconnect(c *client) {
+// disconnect is the other half of connect: it runs when a subscriber's
+// connection ends, however it ended, and gives the provider its chance to let
+// go.
+func (s *Server) disconnect(c *subscriber) {
 	s.mu.Lock()
 	// Only drop the entry if it is still this connection's.
-	if current, ok := s.clients[c.id]; ok && current == c {
-		delete(s.clients, c.id)
+	if current, ok := s.subscribers[c.ref]; ok && current == c {
+		delete(s.subscribers, c.ref)
 	}
 	s.mu.Unlock()
 
-	s.provider.Release(c.id)
+	s.provider.Release(c.ref)
 }
 
 // awaitAck blocks until the client confirms it has interpreted the update, so
 // the server's idea of the client's state never runs ahead of reality.
-func awaitAck(c *client, hash plumbing.Hash, acks <-chan plumbing.Hash, recvErr <-chan error) error {
+func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recvErr <-chan error) error {
 	for {
 		select {
 		case acked := <-acks:
@@ -413,7 +414,7 @@ func awaitAck(c *client, hash plumbing.Hash, acks <-chan plumbing.Hash, recvErr 
 }
 
 // push sends the client the objects between the tree it holds and hash.
-func (s *Server) push(conn *wire.Conn, c *client, hash plumbing.Hash) error {
+func (s *Server) push(conn *wire.Conn, c *subscriber, hash plumbing.Hash) error {
 	missing, err := c.store.SelectSince(c.held(), hash)
 	if err != nil {
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
@@ -446,7 +447,8 @@ func readAcks(conn *wire.Conn, acks chan<- plumbing.Hash) error {
 		}
 
 		if msg.Kind != wire.Ack {
-			return fmt.Errorf("server: unexpected %s after registration", msg.Kind)
+			return treevial.Errorf(treevial.CodeInvalid,
+				"unexpected %s after registration", msg.Kind)
 		}
 
 		select {

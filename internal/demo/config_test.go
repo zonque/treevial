@@ -35,15 +35,15 @@ func TestExampleHasTenLeavesMirroringTheStruct(t *testing.T) {
 	}
 }
 
-func TestExampleIsPersonalisedPerClient(t *testing.T) {
+func TestExampleIsPersonalisedPerLabel(t *testing.T) {
 	a := demo.Example("printer-7")
 	b := demo.Example("sensor-3")
 
 	if a.Device.Name == b.Device.Name {
-		t.Error("two clients were given the same device name")
+		t.Error("two labels produced the same device name")
 	}
 	if a.Network.Hostname == b.Network.Hostname {
-		t.Error("two clients were given the same hostname")
+		t.Error("two labels produced the same hostname")
 	}
 }
 

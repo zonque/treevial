@@ -46,10 +46,12 @@ func writing(t *testing.T, fn func() error) {
 	})
 }
 
-func TestRegisterCarriesTheClientIDAndState(t *testing.T) {
+func TestRegisterCarriesTheRefAndState(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return client.WriteRegister("printer-7", someHash) })
+	ref := "refs/heads/printer-7/config"
+
+	writing(t, func() error { return client.WriteRegister(ref, someHash) })
 
 	msg, err := server.ReadClientMessage()
 	if err != nil {
@@ -59,18 +61,37 @@ func TestRegisterCarriesTheClientIDAndState(t *testing.T) {
 	if msg.Kind != wire.Register {
 		t.Errorf("kind %v, want Register", msg.Kind)
 	}
-	if msg.ClientID != "printer-7" {
-		t.Errorf("client ID %q, want %q", msg.ClientID, "printer-7")
+	if msg.Ref != ref {
+		t.Errorf("ref %q, want %q", msg.Ref, ref)
 	}
 	if msg.Hash != someHash {
 		t.Errorf("synced %s, want %s", msg.Hash, someHash)
 	}
 }
 
+func TestRegisterCarriesTheRefVerbatim(t *testing.T) {
+	client, server := pair(t)
+
+	// The server reads whatever the client asked for; deciding whether it
+	// is acceptable is a separate job from carrying it.
+	ref := "refs/devices/hall-a/row-3/seat-9"
+
+	writing(t, func() error { return client.WriteRegister(ref, plumbing.ZeroHash) })
+
+	msg, err := server.ReadClientMessage()
+	if err != nil {
+		t.Fatalf("ReadClientMessage: %v", err)
+	}
+
+	if msg.Ref != ref {
+		t.Errorf("ref %q, want %q", msg.Ref, ref)
+	}
+}
+
 func TestRegisterCarriesTheZeroHashForAFreshClient(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return client.WriteRegister("printer-7", plumbing.ZeroHash) })
+	writing(t, func() error { return client.WriteRegister("refs/heads/printer-7/config", plumbing.ZeroHash) })
 
 	msg, err := server.ReadClientMessage()
 	if err != nil {
@@ -249,18 +270,26 @@ func TestMalformedLinesAreRejected(t *testing.T) {
 	for _, line := range []string{
 		"",
 		"register",
-		"register printer-7",
-		"register printer-7 not-a-hash",
+		"register refs/heads/printer-7/config",
+		"register refs/heads/printer-7/config not-a-hash",
 		"ack",
 		"ack not-a-hash",
-		"greetings printer-7",
+		"greetings refs/heads/printer-7/config",
 	} {
 		client, server := pair(t)
 
 		writing(t, func() error { return client.WriteLine(line) })
 
-		if _, err := server.ReadClientMessage(); err == nil {
+		_, err := server.ReadClientMessage()
+		if err == nil {
 			t.Errorf("line %q was accepted", line)
+
+			continue
+		}
+		// Classified, so the server can tell the client why rather than
+		// just hanging up on it.
+		if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+			t.Errorf("line %q: code %q, want %q", line, got, treevial.CodeInvalid)
 		}
 	}
 }
@@ -277,8 +306,14 @@ func TestMalformedServerLinesAreRejected(t *testing.T) {
 
 		writing(t, func() error { return server.WriteLine(line) })
 
-		if _, err := client.ReadServerMessage(); err == nil {
+		_, err := client.ReadServerMessage()
+		if err == nil {
 			t.Errorf("line %q was accepted", line)
+
+			continue
+		}
+		if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+			t.Errorf("line %q: code %q, want %q", line, got, treevial.CodeInvalid)
 		}
 	}
 }

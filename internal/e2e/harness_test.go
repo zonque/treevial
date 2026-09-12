@@ -18,8 +18,8 @@ import (
 	"github.com/zonque/treevial/server"
 )
 
-// testProvider prepares a ten-leaf tree per client, labelled with the client's
-// own ID so a test can tell one client's data from another's, and records the
+// testProvider prepares a ten-leaf tree per ref, labelled with the ref itself
+// so a test can tell one subscriber's data from another's, and records the
 // lifecycle calls the server makes.
 type testProvider struct {
 	mu       sync.Mutex
@@ -32,10 +32,10 @@ func newTestProvider() *testProvider {
 	return &testProvider{stores: map[string]*objects.Store{}}
 }
 
-func (p *testProvider) Prepare(clientID string) (*objects.Store, plumbing.Hash, error) {
+func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	store := objects.NewStore()
 
-	root, err := demo.BuildTree(store, clientID)
+	root, err := demo.BuildTree(store, ref)
 	if err != nil {
 		return nil, plumbing.ZeroHash, err
 	}
@@ -43,45 +43,45 @@ func (p *testProvider) Prepare(clientID string) (*objects.Store, plumbing.Hash, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.stores[clientID] = store
-	p.prepared = append(p.prepared, clientID)
+	p.stores[ref] = store
+	p.prepared = append(p.prepared, ref)
 
 	return store, root, nil
 }
 
-func (p *testProvider) Release(clientID string) {
+func (p *testProvider) Release(ref string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	delete(p.stores, clientID)
-	p.released = append(p.released, clientID)
+	delete(p.stores, ref)
+	p.released = append(p.released, ref)
 }
 
-func (p *testProvider) store(t *testing.T, clientID string) *objects.Store {
+func (p *testProvider) store(t *testing.T, ref string) *objects.Store {
 	t.Helper()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	store, ok := p.stores[clientID]
+	store, ok := p.stores[ref]
 	if !ok {
-		t.Fatalf("no store prepared for %q", clientID)
+		t.Fatalf("no store prepared for %q", ref)
 	}
 
 	return store
 }
 
-func (p *testProvider) counts(clientID string) (prepared, released int) {
+func (p *testProvider) counts(ref string) (prepared, released int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, id := range p.prepared {
-		if id == clientID {
+	for _, r := range p.prepared {
+		if r == ref {
 			prepared++
 		}
 	}
-	for _, id := range p.released {
-		if id == clientID {
+	for _, r := range p.released {
+		if r == ref {
 			released++
 		}
 	}
@@ -152,20 +152,20 @@ func nextUpdate(t *testing.T, updates <-chan client.Update) client.Update {
 	return client.Update{}
 }
 
-func waitForSync(t *testing.T, srv *server.Server, clientID string, h plumbing.Hash) {
+func waitForSync(t *testing.T, srv *server.Server, ref string, h plumbing.Hash) {
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, c := range srv.Clients() {
-			if c.ID == clientID && c.Synced == h {
+		for _, sub := range srv.Subscribers() {
+			if sub.Ref == ref && sub.Synced == h {
 				return
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	t.Fatalf("server never saw %q synced at %s", clientID, h)
+	t.Fatalf("server never saw %q synced at %s", ref, h)
 }
 
 // eventually polls until cond holds, for assertions about state the server

@@ -21,10 +21,10 @@ go get github.com/zonque/treevial
 
 | Import | For | Pulls in |
 |---|---|---|
-| `github.com/zonque/treevial` | The shared contract: `IDHeader`, `RefFor`, `ValidateID` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
+| `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
+| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update`, `RefFor`, `ValidateID` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `ClientState` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
 
@@ -32,7 +32,7 @@ A client:
 
 ```go
 conn, err := client.Dial(ctx, "treevial.internal:9418")
-updates, err := conn.Subscribe(ctx, "printer-7")   // served refs/heads/printer-7/config
+updates, err := conn.Subscribe(ctx, "printer-7")   // asks for refs/heads/printer-7/config
 
 for u := range updates {
 	changes, _ := u.Graph.Diff(u.Previous, u.Hash)  // only what moved
@@ -143,18 +143,18 @@ A server, which supplies each client's objects through a `Provider`:
 ```go
 type provider struct{}
 
-func (provider) Prepare(clientID string) (*objects.Store, plumbing.Hash, error) {
+func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	store := objects.NewStore()
-	// …build the client's tree…
+	// …build the tree behind ref…
 	return store, root, nil
 }
 
-func (provider) Release(clientID string) { /* drop whatever Prepare set up */ }
+func (provider) Release(ref string) { /* drop whatever Prepare set up */ }
 
 srv := server.New(provider{})
 go srv.Serve(lis)
 
-srv.SetHead("printer-7", newRoot)   // pushes immediately
+srv.SetHead("refs/heads/printer-7/config", newRoot)   // pushes immediately
 ```
 
 `examples/consumer` is a module of its own that does exactly this, and
@@ -171,10 +171,9 @@ PROTOCOL.md.
 
 ```
 client                                     server
-  │  register printer-7 <synced>  ──────────►│   validate the ID, prepare
-  │                                          │   refs/heads/printer-7/config,
-  │                                          │   walk it pruning what "synced"
-  │                                          │   already covers
+  │  register <ref> <synced>  ──────────────►│   take the ref verbatim, prepare
+  │                                          │   its objects, walk them pruning
+  │                                          │   what "synced" already covers
   │◄──────  update <hash> <count>            │
   │◄──────  <pack bytes as pkt-lines>        │   framed as it is encoded
   │◄──────  0000                             │   flush-pkt ends the pack
@@ -191,16 +190,20 @@ hand-rolled framing to get wrong.
 
 Refs point **directly at a tree**. No commit objects are involved.
 
-## A client is its ID
+## The client names the head
 
-A client identifies itself in the `treevial-client-id` request header, and that ID
-alone decides what it is served: its data is published at
-`refs/heads/<client-id>/config`. Nothing in the stream names a ref.
+The opening message carries the ref the client wants, and **the server takes it
+verbatim**. It derives nothing from it, and nothing about
+`refs/heads/<id>/config` is special to it — a client may ask for
+`refs/devices/hall-a/row-3/seat-9` and be served just the same. What a ref
+stands for is the provider's business.
 
-The ID is interpolated into a ref path, so it is validated at the boundary —
-letters, digits, `-`, `_`, `.`, bounded length, and none of the forms git
-refuses or that could climb out of the path. The root package holds that one
-rule, and both sides use it.
+The Go client builds its ref from an ID with `client.RefFor`, so that
+convention lives in the client package and the shared package knows nothing of
+client IDs at all. Both halves are validated where they are used:
+`client.ValidateID` before an ID is interpolated into a ref, and
+`treevial.ValidateRef` on the server before a ref it was handed is keyed on.
+Neither rule is git's in full; both are conservative subsets of it.
 
 ## A client's state is one hash
 
@@ -217,15 +220,15 @@ client that reconnects and names what it holds is sent nothing at all.
 
 ## Per-client data, released on disconnect
 
-The server owns no objects of its own. It asks the `Provider` for a client's
-graph as that client connects, and hands it back when the connection ends.
+The server owns no objects of its own. It asks the `Provider` for a ref's graph
+when a client subscribes to it, and hands it back when the connection ends.
 
-Give each client a store of its own and releasing one is nothing more than
+Give each ref a store of its own and releasing one is nothing more than
 dropping a reference — there is no shared graph to prune. `Release` runs from a
-`defer` in the stream handler, so it fires however the connection ended: a
-clean close, a cancelled context, a broken stream. Only one connection per ID
-is served at a time (`AlreadyExists` otherwise), which gives a client's
-prepared data exactly one owner.
+`defer` in the connection handler, so it fires however the connection ended: a
+clean close, a cancelled context, a broken connection. Only one connection per
+ref is served at a time (`exists` otherwise), which gives prepared data exactly
+one owner.
 
 ## Connections do not die
 
