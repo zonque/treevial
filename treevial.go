@@ -1,9 +1,9 @@
 // Package treevial implements a reversed-role git object transfer.
 //
-// The client dials the server and keeps one long-lived stream open, but it
-// never asks for anything: it identifies itself, states which tree it already
-// holds, and from then on the server pushes objects down that stream whenever
-// the client's ref moves. Neither side touches the filesystem — the server
+// The client dials the server and keeps one long-lived connection open. It
+// names the head it wants to follow and the tree it already holds, and asks for
+// nothing further: from then on the server pushes objects down that connection
+// whenever that ref moves. Neither side touches the filesystem — the server
 // keeps its objects in memory and the client interprets each one as it is
 // inflated off the wire.
 //

@@ -1,9 +1,10 @@
 # treevial — reversed-role git object transfer
 
-`treevial` moves git objects the wrong way round. The client dials the server, but
-it never asks for anything: it states who it is, names the tree it already
-holds, and then the **server** prepares that client's data and pushes objects
-down the connection whenever its ref moves.
+`treevial` moves git objects the wrong way round. The client dials the server
+and names two things — the head it wants to follow, and the tree it already
+holds — and then asks for nothing further. From there the **server** prepares
+that ref's objects and pushes them down the connection, of its own accord,
+whenever the ref moves.
 
 Neither side touches the filesystem. There is no repository, no `.git`
 directory, no temporary pack file. The server keeps its object graph in memory,
@@ -23,7 +24,7 @@ go get github.com/zonque/treevial
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
-| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
+| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
@@ -57,12 +58,58 @@ type Config struct {
 root, err := structtree.Build(store, cfg)   // one tree, one blob per leaf
 ```
 
-**A field is a leaf if it is not a struct, or if it is a struct implementing
-`proto.Message`.** So an `int`, a `[]string` and a `map` are each stored whole
-in one blob; a generated protobuf message is one blob of its own wire bytes
-rather than a subtree of its internal fields; and a plain nested struct becomes
-a subtree. Unexported fields are skipped, and so are nil pointers — which makes
-a field going nil read as a deletion and a field appearing read as an addition.
+### What becomes a leaf
+
+This is the decision the whole mapping turns on: it decides the shape of the
+tree, and so the paths, what a diff reports, and how little has to move when one
+field changes. **Say it with a struct tag.**
+
+```go
+type Device struct {
+	Name      string
+	Installed time.Time `treevial:"leaf"`   // stored whole, in one blob
+	Location  Location                      // a subtree
+}
+```
+
+`treevial:"leaf"` is honoured whatever else is configured, and it keeps the
+decision in the type itself, next to the fields, where a reader of the struct
+will look for it. Any other tag value is ignored.
+
+Failing a tag, a field is a leaf if it is **not a struct**, or if it is a struct
+implementing **`proto.Message`**. So an `int`, a `[]string` and a `map` are each
+stored whole in one blob; a generated protobuf message is one blob of its own
+wire bytes rather than a subtree of its internal fields; and a plain nested
+struct becomes a subtree. Unexported fields are skipped, and so are nil pointers
+— which makes a field going nil read as a deletion and a field appearing read as
+an addition.
+
+That fallback matters most for what it gets wrong, and it is worth knowing
+before it bites: **a `time.Time` is a struct, is not a protobuf message, and has
+only unexported fields**, so the walker descends into it, finds nothing it may
+read, and the field vanishes from the tree entirely. Tag it and it is stored
+whole — JSON already knows how to write a time, so no encoding of your own is
+needed. Any struct of that shape needs the same treatment, and `Graph.Listing`
+will show you what actually became a blob.
+
+For types you do not own, and so cannot tag, a `Mapper` carries a rule of your
+own:
+
+```go
+m := structtree.Mapper{
+	IsLeaf: func(f reflect.StructField) bool {
+		return f.Type == reflect.TypeFor[time.Time]() || structtree.DefaultIsLeaf(f)
+	},
+}
+
+root, err := m.Build(store, cfg)      // and m.Walk, m.Apply, m.ApplySince
+```
+
+A `Mapper` holds all three decisions — which fields are leaves, how a leaf
+becomes bytes, and how bytes become a value again — because they have to agree:
+a rule that keeps some struct whole only works if the encoding knows what to do
+with it, and a value written by one encoding can only be read by its
+counterpart. The package-level functions are shorthand for its zero value.
 
 The walk is also available on its own, as an iterator:
 
@@ -172,7 +219,7 @@ PROTOCOL.md.
 
 ```
 client                                     server
-  │  register <ref> <synced>  ──────────────►│   take the ref verbatim, prepare
+  │  register <ref> <synced>  ───────────────►│   take the ref verbatim, prepare
   │                                          │   its objects, walk them pruning
   │                                          │   what "synced" already covers
   │◄──────  update <hash> <count>            │
@@ -210,9 +257,9 @@ without a round trip, and the server applies it to whatever it is sent.
 
 ## A client's state is one hash
 
-Holding a tree means holding everything under it, so `Register.synced` — the
-tree the client last finished interpreting — tells the server both what to send
-and exactly where the client stands. Neither side keeps an inventory of
+Holding a tree means holding everything under it, so the `synced` hash on the
+register line — the tree the client last finished interpreting — tells the
+server both what to send and exactly where the client stands. Neither side keeps an inventory of
 objects.
 
 `Store.SelectSince(from, to)` walks the new tree and prunes any subtree already
@@ -221,7 +268,7 @@ a few objects instead of the whole graph. The `Ack` is how the server learns
 the client has caught up; until it arrives the client counts as behind. A
 client that reconnects and names what it holds is sent nothing at all.
 
-## Per-client data, released on disconnect
+## Per-ref data, released on disconnect
 
 The server owns no objects of its own. It asks the `Provider` for a ref's graph
 when a client subscribes to it, and hands it back when the connection ends.
@@ -248,20 +295,20 @@ ends when one side closes the connection, and not before.
 ## Try the example
 
 ```console
-$ go run ./cmd/treevial-server                       # prepares data per client on connect
+$ go run ./cmd/treevial-server                       # prepares data per ref on connect
 $ go run ./cmd/treevial-client -id printer-7         # asks for refs/heads/printer-7/config
 $ go run ./cmd/treevial-client -id sensor-3          # asks for its own ref, served independently
 ```
 
-Each client gets its own configuration struct, personalised with its ID, and
-the server changes `Network.Primary.MTU` a few seconds after each one has
-synced:
+Each ref gets a configuration struct of its own, personalised with the name the
+provider reads out of it, and the server changes `Network.Primary.MTU` a few
+seconds after each subscriber has caught up:
 
 ```
-[printer-7] prepared refs/heads/printer-7/config -> df0e0e1c…, 10 leaves walked from the struct
-[printer-7] synced at df0e0e1c…; setting Network.Primary.MTU in 2s
-[printer-7] moving refs/heads/printer-7/config -> b501ed17… and pushing
-[printer-7] disconnected; released its config and objects (0 clients held)
+[refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
+[refs/heads/printer-7/config] synced at 35ae729e…; setting Network.Primary.MTU in 2s
+[refs/heads/printer-7/config] moving -> 30e5ce80… and pushing
+[refs/heads/printer-7/config] subscriber gone; released its config and objects (0 refs held)
 ```
 
 Each push prints three views: the serialised tree, the paths that moved, and
@@ -293,7 +340,7 @@ push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
   …
   *demo.Config = { …the whole value… }
 
-push 2: refs/heads/printer-7/config -> …, 4 objects received
+push 2: refs/heads/printer-7/config -> 30e5ce80…, 4 objects received
     040000 tree 8076d140…	Audio                   ← unchanged
     100644 blob 413477a4…	Audio/Delay             ← unchanged
     …
@@ -323,10 +370,10 @@ even though the whole struct is current.
 
 | Path | Role |
 |---|---|
-| `treevial.go` | The ID↔ref contract shared by both sides |
-| `client/` | Dials, identifies itself, feeds the pack to the interpreter, acknowledges |
+| `treevial.go` | What both sides must agree on: usable refs, and the error vocabulary |
+| `client/` | Dials, names a head, feeds the pack to the interpreter, acknowledges |
 | `receive/` | Interprets an arriving packfile object by object; no storage of any kind |
-| `server/` | Listener, client registry, per-client data lifecycle, push on ref change |
+| `server/` | Listener, subscriber registry, per-ref data lifecycle, push on ref change |
 | `objects/` | In-memory store, `SelectSince` object arithmetic, pack encoding |
 | `structtree/` | Walks a Go struct with reflect onto a tree, and applies a tree back into one, whole or incrementally |
 | `internal/wire/` | The protocol: pkt-line framed messages over a connection |

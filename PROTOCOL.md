@@ -1,7 +1,7 @@
 # The treevial protocol
 
 A plain TCP connection carrying pkt-line framed messages. The client dials and
-identifies itself; from then on the server decides when to send.
+names the head it wants; from then on the server decides when to send.
 
 ## Framing
 

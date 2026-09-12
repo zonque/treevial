@@ -41,7 +41,7 @@ func run(addr string, mutate time.Duration) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	log.Printf("listening on %s; data is prepared per client on connect", lis.Addr())
+	log.Printf("listening on %s; data is prepared per ref on connect", lis.Addr())
 
 	if mutate > 0 {
 		go mutateSyncedRefs(srv, provider, mutate)
