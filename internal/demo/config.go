@@ -16,18 +16,20 @@ import (
 
 // LeafCount is the number of blobs Example produces. Secondary is nil, so it
 // contributes nothing.
-const LeafCount = 10
+const LeafCount = 11
 
 // Config is the value being synchronised.
 //
 // Every field that is not a struct is a leaf stored in one blob; every plain
-// nested struct becomes a subtree; and Audio.Delay is a leaf despite being a
-// struct, because a protobuf message implements proto.Message.
+// nested struct becomes a subtree; Audio.Delay is a leaf despite being a
+// struct, because a protobuf message implements proto.Message; and
+// Device.Installed is a leaf because it says so.
 //
 //	Device/Name                Network/Hostname          Audio/Gain
 //	Device/Serial              Network/Primary/Address   Audio/Delay
-//	Device/Location/Room       Network/Primary/MTU
-//	Device/Location/Row        Network/DNS
+//	Device/Installed           Network/Primary/MTU
+//	Device/Location/Room       Network/DNS
+//	Device/Location/Row
 type Config struct {
 	Device  Device
 	Network Network
@@ -35,10 +37,17 @@ type Config struct {
 }
 
 // Device describes the unit itself.
+//
+// Installed shows why the tag matters. time.Time is a struct that is not a
+// protobuf message and has only unexported fields, so without the tag the
+// walker would descend into it, find nothing it may read, and the field would
+// vanish from the tree altogether. Tagged, it is stored whole — and JSON
+// already knows how to write a time, so no encoding of our own is needed.
 type Device struct {
-	Name     string
-	Serial   string
-	Location Location
+	Name      string
+	Serial    string
+	Installed time.Time `treevial:"leaf"`
+	Location  Location
 }
 
 // Location is nested one level deeper, to show the path building up.
@@ -74,9 +83,10 @@ type Audio struct {
 func Example(label string) *Config {
 	return &Config{
 		Device: Device{
-			Name:     label,
-			Serial:   fmt.Sprintf("SN-%s-0001", label),
-			Location: Location{Room: "hall-a", Row: 3},
+			Name:      label,
+			Serial:    fmt.Sprintf("SN-%s-0001", label),
+			Installed: time.Unix(1700000000, 0).UTC(),
+			Location:  Location{Room: "hall-a", Row: 3},
 		},
 		Network: Network{
 			Hostname: label + ".local",

@@ -22,9 +22,9 @@ func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {
 		t.Fatalf("SelectSince: %v", err)
 	}
 
-	// 10 blobs plus the root, Device, Location, Network, Primary
-	// and Audio trees.
-	if want := 16; len(got) != want {
+	// 11 blobs plus the root, Device, Location, Network, Primary and Audio
+	// trees.
+	if want := 17; len(got) != want {
 		t.Errorf("got %d objects, want %d", len(got), want)
 	}
 }

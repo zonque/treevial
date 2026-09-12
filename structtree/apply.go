@@ -43,17 +43,18 @@ func protoTarget(v reflect.Value) (proto.Message, bool) {
 	return nil, false
 }
 
-// Apply fills dst from leaves, which maps the paths [Walk] yields to the bytes
-// stored at them — exactly what Graph.Leaves returns on the receiving side. It
-// uses DefaultDecoder.
-//
-// Every leaf is decoded. [ApplySince] does the same job incrementally, decoding
-// only what moved, when the baseline the value is already at is known.
+// Apply fills dst from leaves, using the default rules. It is shorthand for a
+// zero [Mapper]'s Apply.
 func Apply(dst any, leaves map[string][]byte) error {
-	return ApplyWith(dst, leaves, DefaultDecoder)
+	return Mapper{}.Apply(dst, leaves)
 }
 
-// ApplyWith is Apply with a chosen decoding for leaf values.
+// Apply fills dst from leaves, which maps the paths [Mapper.Walk] yields to the
+// bytes stored at them — exactly what Graph.Leaves returns on the receiving
+// side.
+//
+// Every leaf is decoded. [Mapper.ApplySince] does the same job incrementally,
+// decoding only what moved, when the baseline the value is already at is known.
 //
 // The tree is the source of truth, so applying it settles every field dst has:
 // a field whose path the tree does not carry is zeroed, and a pointer to a
@@ -66,13 +67,13 @@ func Apply(dst any, leaves map[string][]byte) error {
 // compare the keys of leaves against the paths [Walk] yields for its own type.
 //
 // dst must be a non-nil pointer to a struct.
-func ApplyWith(dst any, leaves map[string][]byte, decode Decoder) error {
+func (m Mapper) Apply(dst any, leaves map[string][]byte) error {
 	v, err := destination(dst)
 	if err != nil {
 		return err
 	}
 
-	return apply(v, "", mapView{leaves: leaves, subtrees: subtrees(leaves)}, decode)
+	return m.apply(v, "", mapView{leaves: leaves, subtrees: subtrees(leaves)})
 }
 
 // destination checks that dst is something whose fields can be written.
@@ -118,7 +119,7 @@ type view interface {
 
 // apply writes the fields of v from vw. prefix is carried for error messages
 // only; each view resolves names itself.
-func apply(v reflect.Value, prefix string, vw view, decode Decoder) error {
+func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 	t := v.Type()
 
 	for i := range t.NumField() {
@@ -134,8 +135,8 @@ func apply(v reflect.Value, prefix string, vw view, decode Decoder) error {
 
 		target := v.Field(i)
 
-		if isLeaf(field.Type) {
-			if err := applyLeaf(target, path, vw, decode); err != nil {
+		if m.isLeaf(field) {
+			if err := m.applyLeaf(target, path, vw); err != nil {
 				return err
 			}
 
@@ -165,7 +166,7 @@ func apply(v reflect.Value, prefix string, vw view, decode Decoder) error {
 			inner = inner.Elem()
 		}
 
-		if err := apply(inner, path, sub, decode); err != nil {
+		if err := m.apply(inner, path, sub); err != nil {
 			return err
 		}
 	}
@@ -175,7 +176,7 @@ func apply(v reflect.Value, prefix string, vw view, decode Decoder) error {
 
 // applyLeaf decodes one leaf into its field, clearing the field first so that
 // what the view carries is all that ends up there.
-func applyLeaf(target reflect.Value, path string, vw view, decode Decoder) error {
+func (m Mapper) applyLeaf(target reflect.Value, path string, vw view) error {
 	name := path
 	if i := lastSlash(path); i >= 0 {
 		name = path[i+1:]
@@ -196,7 +197,7 @@ func applyLeaf(target reflect.Value, path string, vw view, decode Decoder) error
 		return nil
 	}
 
-	if err := decode(data, target); err != nil {
+	if err := m.decode(data, target); err != nil {
 		return fmt.Errorf("structtree: decode %s: %w", path, err)
 	}
 

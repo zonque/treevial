@@ -37,7 +37,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 	if prepared, _ := h.provider.counts(refA); prepared != 1 {
 		t.Errorf("provider prepared data %d times, want once", prepared)
 	}
-	if want := 16; u.ObjectCount != want {
+	if want := 17; u.ObjectCount != want {
 		t.Errorf("pushed %d objects, want %d", u.ObjectCount, want)
 	}
 
@@ -610,8 +610,8 @@ func TestServerServesAnyWellFormedRefItIsGiven(t *testing.T) {
 		t.Fatalf("ReadServerMessage: %v", err)
 	}
 
-	if msg.ObjectCount != 16 {
-		t.Errorf("pushed %d objects, want 16", msg.ObjectCount)
+	if msg.ObjectCount != 17 {
+		t.Errorf("pushed %d objects, want 17", msg.ObjectCount)
 	}
 
 	if prepared, _ := h.provider.counts(ref); prepared != 1 {

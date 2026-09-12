@@ -26,7 +26,7 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
-| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
+| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
 A client:
 
@@ -100,8 +100,9 @@ add fields before its clients know about them; a client that wants to notice
 them can compare the keys of `leaves` against the paths `Walk` yields for its
 own type.
 
-`ApplyWith` takes a `Decoder`, which must be the counterpart of the `Encoder`
-that wrote the tree.
+A `Mapper`'s `Decode` must be the counterpart of the `Encode` that wrote the
+tree — which is why they are fields of one value rather than separate
+arguments.
 
 ### Following pushes incrementally
 
@@ -130,9 +131,9 @@ decodes a received tree into the struct, rebuilds a tree from it, and requires
 the same root hash — which only holds if nothing was lost on the way.
 
 Leaf bytes come from an `Encoder`. The default stores protobuf messages as
-deterministic wire bytes and everything else as JSON; pass your own to
-`BuildWith`. Whatever you choose **must be deterministic** — an unchanged value
-that re-encodes differently looks like a change to everyone downstream.
+deterministic wire bytes and everything else as JSON; a `Mapper` carries your
+own. Whatever you choose **must be deterministic** — an unchanged value that
+re-encodes differently looks like a change to everyone downstream.
 
 This is what makes the git machinery pay off: change one deeply nested field
 and only that blob and the trees on its path are new, however large the rest of
@@ -273,13 +274,14 @@ which is where the leaf rules become visible — a slice or a protobuf message i
 one `blob`, a nested struct a `tree`:
 
 ```
-push 1: refs/heads/printer-7/config -> df0e0e1c…, 16 objects received
-  tree df0e0e1cd7146ab580338deb67e66bd05d42c1e8
+push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
+  tree 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
     040000 tree 8076d140…	Audio
     100644 blob 413477a4…	Audio/Delay             ← proto.Message: one blob
     100644 blob d594cf69…	Audio/Gain
-    040000 tree 323551cb…	Device
-    040000 tree eb5bd8cd…	Device/Location
+    040000 tree 7581aab3…	Device
+    100644 blob 664684c1…	Device/Installed        ← tagged `treevial:"leaf"`
+    040000 tree eb5bd8cd…	Device/Location         ← untagged struct: a subtree
     100644 blob 60c9f71d…	Device/Location/Room
     …
     040000 tree 92b4e348…	Network
@@ -287,11 +289,11 @@ push 1: refs/heads/printer-7/config -> df0e0e1c…, 16 objects received
     040000 tree be9911a3…	Network/Primary
     100644 blob 37021f4a…	Network/Primary/MTU
   + Audio/Delay  413477a4  "\x10\x80\xb6\xdc\x05"
+  + Device/Installed  664684c1  "\"2023-11-14T22:13:20Z\""
   …
   *demo.Config = { …the whole value… }
 
-push 2: refs/heads/printer-7/config -> b501ed17…, 4 objects received
-  tree b501ed1768b41ecd5086ec43345aece2a0fb5d1c
+push 2: refs/heads/printer-7/config -> …, 4 objects received
     040000 tree 8076d140…	Audio                   ← unchanged
     100644 blob 413477a4…	Audio/Delay             ← unchanged
     …
@@ -306,11 +308,11 @@ push 2: refs/heads/printer-7/config -> b501ed17…, 4 objects received
 ```
 
 Four object hashes moved between those two listings — the rewritten blob and
-the three trees above it — and the other twelve are identical. That is the
+the three trees above it — and the other thirteen are identical. That is the
 whole mechanism, visible: it is why the second push carried four objects, why
 `SelectSince` had nothing else to send, and why `ApplySince` decoded one leaf.
 
-Sixteen objects the first time — ten leaves and six trees — and four the
+Seventeen objects the first time — eleven leaves and six trees — and four the
 second: the rewritten blob plus `Primary`, `Network` and the root.
 
 The value it prints is a `demo.Config` — the same type the server walked —

@@ -7,11 +7,35 @@
 // same subtree pruning, the same diffs — while the thing being synchronised is
 // an ordinary Go value.
 //
-// A field is a leaf if it is not a struct, or if it is a struct that
-// implements proto.Message. Everything else is descended into. So a slice, a
-// map and an int are each stored whole in one blob, a generated protobuf
-// message is stored as one blob of its own wire bytes, and a plain nested
-// struct becomes a subtree.
+// # What becomes a leaf
+//
+// This is the decision the whole mapping turns on, because it is what decides
+// the shape of the tree — and therefore the paths, what a diff reports, and how
+// little has to move when one field changes.
+//
+// A field is a leaf if it is tagged:
+//
+//	type Config struct {
+//		Installed time.Time `treevial:"leaf"`
+//	}
+//
+// Tagging is the primary way to say so. It is honoured whatever rule is in
+// force, and it keeps the decision in the type itself, next to the fields,
+// where a reader of the struct will look for it.
+//
+// Failing a tag, a field is a leaf if it is not a struct, or if it is a struct
+// implementing proto.Message. So a slice, a map and an int are each stored
+// whole in one blob, a generated protobuf message is one blob of its own wire
+// bytes, and a plain nested struct becomes a subtree.
+//
+// That fallback matters most for what it gets wrong. A time.Time is a struct,
+// is not a protobuf message, and has only unexported fields — so the walker
+// descends into it, finds nothing it may read, and the field vanishes from the
+// tree. Tag it and it is stored whole. Any struct of that shape needs the same
+// treatment, and the tag is how to give it.
+//
+// For types you do not own, and so cannot tag, a [Mapper] carries a rule of
+// your own alongside the encoding that serves it.
 //
 // Because a leaf's blob changes only when that leaf's bytes change, and a
 // subtree's hash changes only when something beneath it changes, updating one
@@ -48,6 +72,12 @@ type Leaf struct {
 	Value reflect.Value
 }
 
+// Walk returns an iterator over the leaves of v, using the default rules. It is
+// shorthand for a zero [Mapper]'s Walk.
+func Walk(v any) iter.Seq[Leaf] {
+	return Mapper{}.Walk(v)
+}
+
 // Walk returns an iterator over the leaves of v, in the order the fields are
 // declared, descending depth-first.
 //
@@ -55,20 +85,20 @@ type Leaf struct {
 // because they cannot be read, and nil pointers are skipped, because there is
 // nothing to store; a field that becomes nil therefore reads as a deletion and
 // one that stops being nil as an addition.
-func Walk(v any) iter.Seq[Leaf] {
+func (m Mapper) Walk(v any) iter.Seq[Leaf] {
 	return func(yield func(Leaf) bool) {
 		root := reflect.ValueOf(v)
 		if !root.IsValid() {
 			return
 		}
 
-		walk(root, "", yield)
+		m.walk(root, "", yield)
 	}
 }
 
 // walk yields the leaves of v under prefix, reporting whether iteration should
 // carry on.
-func walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
+func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
 	v, ok := deref(v)
 	if !ok {
 		return true
@@ -93,7 +123,7 @@ func walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
 
 		value := v.Field(i)
 
-		if isLeaf(field.Type) {
+		if m.isLeaf(field) {
 			inner, ok := deref(value)
 			if !ok {
 				continue
@@ -106,7 +136,7 @@ func walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
 			continue
 		}
 
-		if !walk(value, path, yield) {
+		if !m.walk(value, path, yield) {
 			return false
 		}
 	}
@@ -114,10 +144,9 @@ func walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
 	return true
 }
 
-// isLeaf reports whether a field of type t is stored as one blob rather than
-// descended into: everything that is not a struct, plus the structs that are
-// protobuf messages.
-func isLeaf(t reflect.Type) bool {
+// isLeafType is the default rule, expressed over a type: everything that is not
+// a struct, plus the structs that are protobuf messages.
+func isLeafType(t reflect.Type) bool {
 	if isProtoMessage(t) {
 		return true
 	}
@@ -188,13 +217,13 @@ func protoValue(v reflect.Value) (proto.Message, bool) {
 }
 
 // Build writes v into store as a nested tree and returns the root tree hash,
-// using DefaultEncoder.
+// using the default rules. It is shorthand for a zero [Mapper]'s Build.
 func Build(store *objects.Store, v any) (plumbing.Hash, error) {
-	return BuildWith(store, v, DefaultEncoder)
+	return Mapper{}.Build(store, v)
 }
 
-// BuildWith is Build with a chosen encoding for leaf values.
-func BuildWith(store *objects.Store, v any, encode Encoder) (plumbing.Hash, error) {
+// Build writes v into store as a nested tree and returns the root tree hash.
+func (m Mapper) Build(store *objects.Store, v any) (plumbing.Hash, error) {
 	value := reflect.ValueOf(v)
 
 	inner, ok := deref(value)
@@ -207,8 +236,8 @@ func BuildWith(store *objects.Store, v any, encode Encoder) (plumbing.Hash, erro
 
 	root := &node{children: map[string]*node{}}
 
-	for leaf := range Walk(v) {
-		content, err := encode(leaf.Value)
+	for leaf := range m.Walk(v) {
+		content, err := m.encode(leaf.Value)
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("structtree: encode %s: %w", leaf.Path, err)
 		}

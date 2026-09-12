@@ -91,10 +91,10 @@ func TestInterpretDecodesEveryObjectInTheStream(t *testing.T) {
 		t.Fatalf("Interpret: %v", err)
 	}
 
-	if want := uint32(16); rec.count != want {
+	if want := uint32(17); rec.count != want {
 		t.Errorf("pack header announced %d objects, want %d", rec.count, want)
 	}
-	if want := 10; len(rec.blobs) != want {
+	if want := 11; len(rec.blobs) != want {
 		t.Errorf("got %d blobs, want %d", len(rec.blobs), want)
 	}
 	if want := 6; len(rec.trees) != want {
@@ -196,6 +196,7 @@ func TestGraphRebuildsTheHierarchyFromCallbacksAlone(t *testing.T) {
 
 	want := []string{
 		"Audio/Delay", "Audio/Gain",
+		"Device/Installed",
 		"Device/Location/Room", "Device/Location/Row",
 		"Device/Name", "Device/Serial",
 		"Network/DNS", "Network/Hostname",

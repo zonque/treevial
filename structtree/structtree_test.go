@@ -188,17 +188,9 @@ func TestWalkYieldsNothingForAStructWithNoSyncableFields(t *testing.T) {
 	}
 }
 
-// storedLeaves builds v into a store and reads the tree back the way a client
-// would: through a packfile.
-func storedLeaves(t *testing.T, v any) (plumbing.Hash, map[string][]byte) {
+// leavesOf reads a stored tree back the way a client would: through a packfile.
+func leavesOf(t *testing.T, store *objects.Store, root plumbing.Hash) map[string][]byte {
 	t.Helper()
-
-	store := objects.NewStore()
-
-	root, err := structtree.Build(store, v)
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
 
 	hashes, err := store.SelectSince(plumbing.ZeroHash, root)
 	if err != nil {
@@ -220,7 +212,21 @@ func storedLeaves(t *testing.T, v any) (plumbing.Hash, map[string][]byte) {
 		t.Fatalf("Leaves: %v", err)
 	}
 
-	return root, leaves
+	return leaves
+}
+
+// storedLeaves builds v into a store and reads the tree back.
+func storedLeaves(t *testing.T, v any) (plumbing.Hash, map[string][]byte) {
+	t.Helper()
+
+	store := objects.NewStore()
+
+	root, err := structtree.Build(store, v)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	return root, leavesOf(t, store, root)
 }
 
 func TestBuildStoresEachLeafAtItsPath(t *testing.T) {

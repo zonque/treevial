@@ -59,8 +59,8 @@ func TestListingShowsEveryObjectWithItsHash(t *testing.T) {
 
 	rows := listingOf(t, root, pack)
 
-	// Ten leaves and the five subtrees beneath the root.
-	if want := 15; len(rows) != want {
+	// Eleven leaves and the five subtrees beneath the root.
+	if want := 16; len(rows) != want {
 		t.Errorf("listed %d objects, want %d", len(rows), want)
 	}
 
@@ -77,8 +77,8 @@ func TestListingShowsEveryObjectWithItsHash(t *testing.T) {
 	if trees != 5 {
 		t.Errorf("listed %d trees, want 5", trees)
 	}
-	if blobs != 10 {
-		t.Errorf("listed %d blobs, want 10", blobs)
+	if blobs != 11 {
+		t.Errorf("listed %d blobs, want 11", blobs)
 	}
 }
 
@@ -97,6 +97,7 @@ func TestListingMarksStructsAsTreesAndValuesAsBlobs(t *testing.T) {
 		"Network/Primary":      "tree",
 		"Network/Primary/MTU":  "blob",
 		"Network/DNS":          "blob", // a slice is one leaf
+		"Device/Installed":     "blob", // a struct, tagged as a leaf
 		"Audio":                "tree",
 		"Audio/Delay":          "blob", // a proto.Message is one leaf
 	} {

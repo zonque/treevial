@@ -17,8 +17,14 @@ type Source interface {
 	Blob(h plumbing.Hash) ([]byte, bool)
 }
 
+// ApplySince brings dst from the tree at old to the tree at new, using the
+// default rules. It is shorthand for a zero [Mapper]'s ApplySince.
+func ApplySince(dst any, src Source, old, new plumbing.Hash) error {
+	return Mapper{}.ApplySince(dst, src, old, new)
+}
+
 // ApplySince brings dst from the tree at old to the tree at new, decoding only
-// what moved between them, using DefaultDecoder.
+// what moved between them.
 //
 // A subtree whose hash is unchanged is skipped whole, however many leaves are
 // under it — the mirror of the pruning the sending side does to decide what to
@@ -30,12 +36,7 @@ type Source interface {
 // dst as they were. Pass plumbing.ZeroHash as old to decode everything, which
 // is always safe; a baseline the source cannot resolve is treated the same
 // way.
-func ApplySince(dst any, src Source, old, new plumbing.Hash) error {
-	return ApplySinceWith(dst, src, old, new, DefaultDecoder)
-}
-
-// ApplySinceWith is ApplySince with a chosen decoding for leaf values.
-func ApplySinceWith(dst any, src Source, old, new plumbing.Hash, decode Decoder) error {
+func (m Mapper) ApplySince(dst any, src Source, old, new plumbing.Hash) error {
 	v, err := destination(dst)
 	if err != nil {
 		return err
@@ -54,7 +55,7 @@ func ApplySinceWith(dst any, src Source, old, new plumbing.Hash, decode Decoder)
 		return err
 	}
 
-	return apply(v, "", root, decode)
+	return m.apply(v, "", root)
 }
 
 // treeView reads from a tree, comparing it against a baseline tree so that

@@ -23,12 +23,18 @@ type history struct {
 func newHistory(t *testing.T, values ...any) *history {
 	t.Helper()
 
+	return newHistoryWith(t, structtree.Mapper{}, values...)
+}
+
+func newHistoryWith(t *testing.T, m structtree.Mapper, values ...any) *history {
+	t.Helper()
+
 	h := &history{store: objects.NewStore(), graph: receive.NewGraph()}
 
 	var sent plumbing.Hash
 
 	for _, v := range values {
-		root, err := structtree.Build(h.store, v)
+		root, err := m.Build(h.store, v)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
@@ -56,13 +62,15 @@ func newHistory(t *testing.T, values ...any) *history {
 	return h
 }
 
-// countingDecoder records how many leaves were actually decoded, which is how
-// a test can see what ApplySince skipped.
-func countingDecoder(n *int) structtree.Decoder {
-	return func(data []byte, v reflect.Value) error {
-		*n++
+// counting returns a Mapper whose decoding is tallied, which is how a test can
+// see what ApplySince skipped.
+func counting(n *int) structtree.Mapper {
+	return structtree.Mapper{
+		Decode: func(data []byte, v reflect.Value) error {
+			*n++
 
-		return structtree.DefaultDecoder(data, v)
+			return structtree.DefaultDecoder(data, v)
+		},
 	}
 }
 
@@ -95,7 +103,7 @@ func TestApplySinceDecodesOnlyTheLeavesThatChanged(t *testing.T) {
 	}
 
 	decoded := 0
-	if err := structtree.ApplySinceWith(&got, h.graph, h.roots[0], h.roots[1], countingDecoder(&decoded)); err != nil {
+	if err := counting(&decoded).ApplySince(&got, h.graph, h.roots[0], h.roots[1]); err != nil {
 		t.Fatalf("ApplySince: %v", err)
 	}
 
@@ -118,7 +126,7 @@ func TestApplySinceDecodesNothingWhenTheTreeDidNotMove(t *testing.T) {
 	}
 
 	decoded := 0
-	if err := structtree.ApplySinceWith(&got, h.graph, h.roots[0], h.roots[0], countingDecoder(&decoded)); err != nil {
+	if err := counting(&decoded).ApplySince(&got, h.graph, h.roots[0], h.roots[0]); err != nil {
 		t.Fatalf("ApplySince: %v", err)
 	}
 
@@ -194,7 +202,7 @@ func TestApplySinceTreatsAnUnknownBaselineAsEverythingChanged(t *testing.T) {
 	var got config
 
 	decoded := 0
-	if err := structtree.ApplySinceWith(&got, h.graph, unknown, h.roots[0], countingDecoder(&decoded)); err != nil {
+	if err := counting(&decoded).ApplySince(&got, h.graph, unknown, h.roots[0]); err != nil {
 		t.Fatalf("ApplySince: %v", err)
 	}
 

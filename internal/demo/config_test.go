@@ -8,7 +8,7 @@ import (
 	"github.com/zonque/treevial/structtree"
 )
 
-func TestExampleHasTenLeavesMirroringTheStruct(t *testing.T) {
+func TestExampleLeavesMirrorTheStruct(t *testing.T) {
 	var got []string
 	for leaf := range structtree.Walk(demo.Example("printer-7")) {
 		got = append(got, leaf.Path)
@@ -17,6 +17,7 @@ func TestExampleHasTenLeavesMirroringTheStruct(t *testing.T) {
 	want := []string{
 		"Device/Name",
 		"Device/Serial",
+		"Device/Installed",
 		"Device/Location/Room",
 		"Device/Location/Row",
 		"Network/Hostname",
