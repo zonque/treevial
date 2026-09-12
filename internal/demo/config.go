@@ -10,8 +10,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/structtree"
 )
 
 // LeafCount is the number of blobs Example produces. Secondary is nil, so it

@@ -161,29 +161,33 @@ srv.SetHead("printer-7", newRoot)   // pushes immediately
 `TestSeparateModuleConsumersBuild` builds it — so the claim that each side can
 be consumed independently is checked, not asserted.
 
-The wire format lives in `proto/treevial.proto`. Its generated Go bindings are
-deliberately **internal**: the supported surface is the Go API above, and
-anyone implementing another language's client works from the `.proto` file.
+The wire format is described in [PROTOCOL.md](PROTOCOL.md): pkt-line framed
+messages over a plain TCP connection, which is the framing git itself uses. Its
+Go implementation is deliberately **internal**: the supported surface is the Go
+API above, and anyone implementing another language's client works from
+PROTOCOL.md.
 
 ## Shape of it
 
 ```
 client                                     server
-  │  header: treevial-client-id: printer-7  ────►│   validate the ID, prepare
-  │                                          │   refs/heads/printer-7/config
-  │  Register{synced}  ─────────────────────►│   walk that ref, pruning what
-  │                                          │   "synced" already covers
-  │◄──────  UpdateBegin{hash, count}         │
-  │◄──────  PackChunk{...} × n               │   pack streams out as it is encoded
-  │◄──────  UpdateEnd{}                      │
-  │  Ack{hash}  ────────────────────────────►│   subscriber is now synced
+  │  register printer-7 <synced>  ──────────►│   validate the ID, prepare
+  │                                          │   refs/heads/printer-7/config,
+  │                                          │   walk it pruning what "synced"
+  │                                          │   already covers
+  │◄──────  update <hash> <count>            │
+  │◄──────  <pack bytes as pkt-lines>        │   framed as it is encoded
+  │◄──────  0000                             │   flush-pkt ends the pack
+  │  ack <hash>  ───────────────────────────►│   subscriber is now synced
   │                                          │
   │              … ref moves …               │
-  │◄──────  UpdateBegin{...}                 │   unprompted: only changed objects
+  │◄──────  update <hash> <count>            │   unprompted: only changed objects
 ```
 
-One long-lived gRPC bidirectional stream carries all of it, so the server can
-push the instant a ref changes.
+One long-lived TCP connection carries all of it, so the server can push the
+instant a ref changes. Every message is a pkt-line — four hex length digits then
+the payload — which is git's own framing and comes from go-git, so there is no
+hand-rolled framing to get wrong.
 
 Refs point **directly at a tree**. No commit objects are involved.
 
@@ -225,25 +229,15 @@ prepared data exactly one owner.
 
 ## Connections do not die
 
-Every mechanism gRPC has for closing a connection by itself is disabled, on
-both sides. The server sets `MaxConnectionIdle`, `MaxConnectionAge` and its
-keepalive `Time`/`Timeout` to the maximum duration, so it never reaps an idle
-connection and never probes a client. Its enforcement policy sets `MinTime` to
-one nanosecond and permits pings without a stream — without that, gRPC's default
-policy answers any client pinging more often than every five minutes with
-`GOAWAY ENHANCE_YOUR_CALM` and closes the connection after three strikes, which
-would take a subscription down mid-flight. The client sets its ping timeout to
-the maximum too, so an unanswered ping is never grounds for hanging up, and
-disables connection idle mode.
+Neither side ever sets a deadline. The server pushes when it has something to
+say, which may be hours after the last byte, and a deadline would tear down a
+perfectly good connection in the meantime. Both ends enable TCP keepalive at 30
+seconds so NATs and middleboxes do not forget a quiet connection; the probes do
+not close a healthy one.
 
-`TestServerNeverAnswersPingsWithEnhanceYourCalm` holds this down by speaking
-raw HTTP/2 to the server and flooding it with PING frames.
-
-Note the flip side: this removes every *voluntary* close, so a genuinely dead
-peer is never detected either, and a client entry survives until the OS TCP
-stack gives up. If you later want dead peers cleaned up while healthy idle
-connections stay immortal, the lever is the server's keepalive `Time`/`Timeout`,
-not the enforcement policy.
+That is the whole of it: there is nothing in a TCP connection that counts down
+while it is quiet, and nothing that punishes a peer for talking. A subscription
+ends when one side closes the connection, and not before.
 
 ## Try the example
 
@@ -323,16 +317,16 @@ even though the whole struct is current.
 | Path | Role |
 |---|---|
 | `treevial.go` | The ID↔ref contract shared by both sides |
-| `client/` | gRPC client: identifies itself, feeds chunks to the interpreter, acknowledges |
+| `client/` | Dials, identifies itself, feeds the pack to the interpreter, acknowledges |
 | `receive/` | Interprets an arriving packfile object by object; no storage of any kind |
-| `server/` | gRPC server: client registry, per-client data lifecycle, push on ref change |
+| `server/` | Listener, client registry, per-client data lifecycle, push on ref change |
 | `objects/` | In-memory store, `SelectSince` object arithmetic, pack encoding |
 | `structtree/` | Walks a Go struct with reflect onto a tree, and applies a tree back into one, whole or incrementally |
-| `internal/treevialpb/` | Generated wire bindings |
+| `internal/wire/` | The protocol: pkt-line framed messages over a connection |
 | `internal/demo/` | The example configuration struct, used by `cmd/` and the tests |
 | `internal/e2e/` | Client and server together over a real TCP listener |
 | `examples/consumer/` | A separate module: a shared `settings` struct, and each side importing only its own half |
-| `proto/treevial.proto` | The wire contract |
+| `PROTOCOL.md` | The wire contract |
 
 ## A note on go-git's packfile API
 

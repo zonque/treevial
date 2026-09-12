@@ -12,10 +12,10 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/treevial/client"
-	"github.com/holoplot/treevial/internal/demo"
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/server"
+	"github.com/zonque/treevial/client"
+	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/server"
 )
 
 // testProvider prepares a ten-leaf tree per client, labelled with the client's

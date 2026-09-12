@@ -12,9 +12,9 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/receive"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/receive"
+	"github.com/zonque/treevial/structtree"
 )
 
 type location struct {

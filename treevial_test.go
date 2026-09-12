@@ -1,10 +1,12 @@
 package treevial_test
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/holoplot/treevial"
+	"github.com/zonque/treevial"
 )
 
 func TestRefForBuildsTheRefFromTheClientID(t *testing.T) {
@@ -55,5 +57,41 @@ func TestValidateIDRejectsIDsThatWouldEscapeTheRefPath(t *testing.T) {
 func TestValidateIDRejectsOverlongIDs(t *testing.T) {
 	if err := treevial.ValidateID(strings.Repeat("a", 256)); err == nil {
 		t.Error("ValidateID accepted an unbounded client ID")
+	}
+}
+
+func TestErrorCarriesItsCodeAndMessage(t *testing.T) {
+	err := &treevial.Error{Code: treevial.CodeAlreadyExists, Message: "client \"printer-7\" is already connected"}
+
+	if got := err.Error(); !strings.Contains(got, "already connected") {
+		t.Errorf("Error() = %q, want it to carry the message", got)
+	}
+	if got := err.Error(); !strings.Contains(got, string(treevial.CodeAlreadyExists)) {
+		t.Errorf("Error() = %q, want it to carry the code", got)
+	}
+}
+
+func TestCodeOfClassifiesProtocolErrors(t *testing.T) {
+	err := &treevial.Error{Code: treevial.CodeInvalid, Message: "client ID is empty"}
+
+	if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+		t.Errorf("CodeOf = %q, want %q", got, treevial.CodeInvalid)
+	}
+}
+
+func TestCodeOfFindsAWrappedProtocolError(t *testing.T) {
+	err := fmt.Errorf("subscribe: %w", &treevial.Error{Code: treevial.CodeInternal, Message: "boom"})
+
+	if got := treevial.CodeOf(err); got != treevial.CodeInternal {
+		t.Errorf("CodeOf = %q, want %q", got, treevial.CodeInternal)
+	}
+}
+
+func TestCodeOfReportsOtherErrorsAsUnknown(t *testing.T) {
+	if got := treevial.CodeOf(errors.New("connection reset")); got != treevial.CodeUnknown {
+		t.Errorf("CodeOf = %q, want %q", got, treevial.CodeUnknown)
+	}
+	if got := treevial.CodeOf(nil); got != treevial.CodeUnknown {
+		t.Errorf("CodeOf(nil) = %q, want %q", got, treevial.CodeUnknown)
 	}
 }

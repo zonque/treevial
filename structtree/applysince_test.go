@@ -7,9 +7,9 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/receive"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/receive"
+	"github.com/zonque/treevial/structtree"
 )
 
 // history builds a sequence of values into one store and feeds every object to

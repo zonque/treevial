@@ -13,12 +13,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/server"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/server"
+	"github.com/zonque/treevial/structtree"
 
-	"github.com/holoplot/treevial-consumer-example/settings"
+	"github.com/zonque/treevial-consumer-example/settings"
 )
 
 // provider hands each client settings of its own, built when it connects and

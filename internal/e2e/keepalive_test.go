@@ -6,17 +6,11 @@ import (
 	"time"
 )
 
-// TestSubscriptionSurvivesAQuietStretch checks that a subscription left idle,
-// with keepalive pinging switched on, is still there when the server decides to
-// push.
+// TestSubscriptionSurvivesAQuietStretch checks that a subscription left idle is
+// still there when the server decides to push.
 //
-// It does not reach gRPC's ping-strike threshold: grpc-go clamps a client's
-// ping interval to ten seconds, so provoking GOAWAY through a real client would
-// take some forty seconds of idling. The server's ping policy is covered
-// directly, and quickly, by TestServerNeverAnswersPingsWithEnhanceYourCalm.
-//
-// What it does cover is that a quiet subscription is still live: the server's
-// keepalive settings never reap it, and the client's never give up on it.
+// Neither side sets a deadline, so nothing on the connection counts down while
+// it is quiet: a subscription ends when one side closes it, and not before.
 func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	h := newHarness(t)
 

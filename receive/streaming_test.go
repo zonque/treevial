@@ -8,7 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/holoplot/treevial/receive"
+	"github.com/zonque/treevial/receive"
 )
 
 // signaller closes first as soon as any object is handed over, so a test can
@@ -50,7 +50,7 @@ func TestInterpretDecodesObjectsWhileTheStreamIsStillArriving(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- receive.Interpret(pr, sig) }()
 
-	// Deliver only the front of the pack, mimicking a single gRPC chunk.
+	// Deliver only the front of the pack, mimicking one pkt-line of it.
 	if _, err := pw.Write(pack[:len(pack)/2]); err != nil {
 		t.Fatalf("write first half: %v", err)
 	}

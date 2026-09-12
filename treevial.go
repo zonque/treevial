@@ -10,30 +10,74 @@
 // The two sides are separate packages, so a client repository and a server
 // repository can each depend on only what it needs:
 //
-//   - [github.com/holoplot/treevial/client] dials, subscribes and interprets.
-//   - [github.com/holoplot/treevial/server] serves clients and pushes to them.
-//   - [github.com/holoplot/treevial/objects] builds and packs the object graph
+//   - [github.com/zonque/treevial/client] dials, subscribes and interprets.
+//   - [github.com/zonque/treevial/server] serves clients and pushes to them.
+//   - [github.com/zonque/treevial/objects] builds and packs the object graph
 //     a server serves.
-//   - [github.com/holoplot/treevial/receive] interprets an arriving packfile
+//   - [github.com/zonque/treevial/receive] interprets an arriving packfile
 //     without storing it.
 //
 // This package holds what both sides must agree on: how a client identifies
-// itself, and which ref that identity is served at.
+// itself, which ref that identity is served at, and how the server reports a
+// refusal.
 //
-// The wire format is defined by proto/treevial.proto in the repository. Its
-// generated Go bindings are internal, because the supported surface is the Go
-// API in these packages; anyone implementing another language's client works
-// from the .proto file.
+// The wire format is described by PROTOCOL.md in the repository: pkt-line
+// framed messages over a plain TCP connection. Its Go implementation is
+// internal, because the supported surface is the Go API in these packages;
+// anyone implementing another language's client works from PROTOCOL.md.
 package treevial
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
 
-// IDHeader is the gRPC request header a client states its ID in. The value
-// decides which ref the client is served, so both sides agree on it here.
-const IDHeader = "treevial-client-id"
+// ErrorCode classifies a protocol error, so a client can tell why the server
+// turned it away without matching on message text.
+type ErrorCode string
+
+const (
+	// CodeUnknown is what any error that did not come from the other side
+	// classifies as: a dropped connection, a local failure.
+	CodeUnknown ErrorCode = "unknown"
+	// CodeInvalid means the request was malformed: an unusable client ID,
+	// a hash that is not a hash, a state the server cannot resolve.
+	CodeInvalid ErrorCode = "invalid"
+	// CodeAlreadyExists means another connection is already serving that
+	// client ID.
+	CodeAlreadyExists ErrorCode = "exists"
+	// CodeInternal means the server failed on its own account.
+	CodeInternal ErrorCode = "internal"
+)
+
+// Error is a failure the server reported over the connection. It travels as
+// one line, so the code is a short token rather than prose.
+type Error struct {
+	Code    ErrorCode
+	Message string
+}
+
+// Error implements the error interface.
+func (e *Error) Error() string {
+	return fmt.Sprintf("treevial: %s: %s", e.Code, e.Message)
+}
+
+// Errorf builds an Error with a formatted message.
+func Errorf(code ErrorCode, format string, a ...any) *Error {
+	return &Error{Code: code, Message: fmt.Sprintf(format, a...)}
+}
+
+// CodeOf reports the code of err, unwrapping as it goes. Anything that is not
+// an Error — including nil — is CodeUnknown.
+func CodeOf(err error) ErrorCode {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+
+	return CodeUnknown
+}
 
 // MaxIDLength bounds a client ID, so a ref name cannot be grown without limit
 // by whatever a client puts in its header.

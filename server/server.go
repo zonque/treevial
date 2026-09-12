@@ -1,36 +1,27 @@
 // Package server is the pushing side of treevial. It listens for clients, but
 // the direction of the object flow is reversed from git's usual arrangement:
 // once a client has identified itself, the server prepares that client's
-// objects and sends them down the long-lived stream on its own initiative,
+// objects and sends them down the long-lived connection on its own initiative,
 // whenever the client's ref moves.
 //
 // A server repository depends on this package and on
-// [github.com/holoplot/treevial/objects]; it does not need the client side at
+// [github.com/zonque/treevial/objects]; it does not need the client side at
 // all.
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/internal/treevialpb"
-	"github.com/holoplot/treevial/objects"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/internal/wire"
+	"github.com/zonque/treevial/objects"
 )
-
-// chunkSize caps how much pack data travels in one PackChunk message.
-const chunkSize = 32 * 1024
 
 // Provider supplies and disposes of the objects belonging to one client. The
 // server owns neither: it asks for a client's data when that client connects
@@ -109,78 +100,89 @@ func (c *client) ack(hash plumbing.Hash) {
 	c.synced = hash
 }
 
+// keepalivePeriod is how often the operating system probes an idle connection.
+// Probes keep NATs and middleboxes from forgetting a connection that may sit
+// quiet for hours; they do not close a healthy one.
+const keepalivePeriod = 30 * time.Second
+
 // Server publishes a ref per client and pushes the objects behind it.
 type Server struct {
 	provider Provider
-	grpc     *grpc.Server
 
 	mu      sync.Mutex
 	clients map[string]*client
+	conns   map[*wire.Conn]struct{}
+	lis     net.Listener
+	stopped bool
 }
 
 // New returns a server that asks provider for each client's objects.
 func New(provider Provider) *Server {
-	s := &Server{
+	return &Server{
 		provider: provider,
 		clients:  map[string]*client{},
+		conns:    map[*wire.Conn]struct{}{},
 	}
-
-	// A treevial connection carries pushes the server initiates, so it must
-	// outlive any amount of quiet. Every mechanism gRPC has for closing a
-	// connection on its own is disabled here.
-	s.grpc = grpc.NewServer(
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			// Never close a connection for being idle or old.
-			MaxConnectionIdle:     forever,
-			MaxConnectionAge:      forever,
-			MaxConnectionAgeGrace: forever,
-			// Never probe the client, and so never conclude from a
-			// missing probe reply that it has gone away.
-			Time:    forever,
-			Timeout: forever,
-		}),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			// The smallest non-zero interval, because zero means
-			// "use the five-minute default". Without this, a client
-			// that pings more often than every five minutes gets
-			// GOAWAY ENHANCE_YOUR_CALM and its connection closed
-			// after three strikes.
-			MinTime: minPingInterval,
-			// Client pings are welcome even with no stream open.
-			PermitWithoutStream: true,
-		}),
-	)
-	treevialpb.RegisterObjectSyncServer(s.grpc, &syncService{server: s})
-
-	return s
-}
-
-// syncService adapts the generated gRPC service to the Server. It exists so
-// that the wire types, which are an implementation detail, stay out of the
-// Server's exported API.
-type syncService struct {
-	treevialpb.UnimplementedObjectSyncServer
-
-	server *Server
-}
-
-// Sync implements the generated ObjectSyncServer interface.
-func (s *syncService) Sync(stream treevialpb.ObjectSync_SyncServer) error {
-	return s.server.sync(stream)
 }
 
 // Serve accepts connections on lis until Stop is called.
+//
+// No deadline is ever set on a connection: the server pushes when it has
+// something to say, which may be hours after the last byte, and a deadline
+// would tear down a perfectly good connection in the meantime.
 func (s *Server) Serve(lis net.Listener) error {
-	if err := s.grpc.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-		return err
-	}
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		lis.Close()
 
-	return nil
+		return nil
+	}
+	s.lis = lis
+	s.mu.Unlock()
+
+	for {
+		conn, err := lis.Accept()
+		if err != nil {
+			if s.isStopped() {
+				return nil
+			}
+
+			return err
+		}
+
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetKeepAlive(true)
+			_ = tcp.SetKeepAlivePeriod(keepalivePeriod)
+		}
+
+		go s.handle(conn)
+	}
 }
 
 // Stop shuts the server down and drops every client.
 func (s *Server) Stop() {
-	s.grpc.Stop()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+
+		return
+	}
+	s.stopped = true
+
+	lis := s.lis
+	conns := make([]*wire.Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+
+	if lis != nil {
+		lis.Close()
+	}
+	for _, c := range conns {
+		c.Close()
+	}
 }
 
 // SetHead points a client's ref at hash and immediately wakes it. This is the
@@ -190,7 +192,7 @@ func (s *Server) SetHead(clientID string, hash plumbing.Hash) error {
 	c, ok := s.clients[clientID]
 	s.mu.Unlock()
 
-	if !ok {
+	if !ok || c == nil {
 		return fmt.Errorf("no client %q is connected", clientID)
 	}
 
@@ -213,7 +215,7 @@ func (s *Server) Head(clientID string) plumbing.Hash {
 	c, ok := s.clients[clientID]
 	s.mu.Unlock()
 
-	if !ok {
+	if !ok || c == nil {
 		return plumbing.ZeroHash
 	}
 
@@ -225,7 +227,11 @@ func (s *Server) Clients() []ClientState {
 	s.mu.Lock()
 	connected := make([]*client, 0, len(s.clients))
 	for _, c := range s.clients {
-		connected = append(connected, c)
+		// A nil entry is an ID claimed by a connection whose data is
+		// still being prepared.
+		if c != nil {
+			connected = append(connected, c)
+		}
 	}
 	s.mu.Unlock()
 
@@ -237,18 +243,44 @@ func (s *Server) Clients() []ClientState {
 	return out
 }
 
-// sync serves one client for the whole life of its connection: it identifies
-// the client from the request header, has its objects prepared, pushes what the
-// client is missing, and then stays put, pushing again every time the ref
-// moves. When it returns, the client has disconnected and its resources are
-// released.
-func (s *Server) sync(stream treevialpb.ObjectSync_SyncServer) error {
-	clientID, err := clientIDFrom(stream.Context())
-	if err != nil {
-		return err
-	}
+func (s *Server) isStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	synced, err := readRegistration(stream)
+	return s.stopped
+}
+
+// handle serves one connection for its whole life. When it returns, the client
+// has disconnected and its resources are released.
+func (s *Server) handle(nc net.Conn) {
+	conn := wire.NewConn(nc)
+
+	s.mu.Lock()
+	s.conns[conn] = struct{}{}
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.conns, conn)
+		s.mu.Unlock()
+
+		conn.Close()
+	}()
+
+	err := s.serve(conn)
+
+	// A refusal is told to the client; anything else is the connection
+	// itself going away, and there is nobody left to tell.
+	var reported *treevial.Error
+	if errors.As(err, &reported) {
+		_ = conn.WriteError(reported)
+	}
+}
+
+// serve registers the client, pushes what it is missing, and then stays put,
+// pushing again every time its ref moves.
+func (s *Server) serve(conn *wire.Conn) error {
+	clientID, synced, err := register(conn)
 	if err != nil {
 		return err
 	}
@@ -259,20 +291,20 @@ func (s *Server) sync(stream treevialpb.ObjectSync_SyncServer) error {
 	}
 	defer s.disconnect(c)
 
-	acks := make(chan *treevialpb.Ack, 1)
+	acks := make(chan plumbing.Hash, 1)
 	recvErr := make(chan error, 1)
 
-	go func() { recvErr <- readAcks(stream, acks) }()
+	go func() { recvErr <- readAcks(conn, acks) }()
 
 	// Push what the client is missing right away, then on every ref change.
 	pending := c.currentHead()
 
 	for {
-		if err := s.push(stream, c, pending); err != nil {
+		if err := s.push(conn, c, pending); err != nil {
 			return err
 		}
 
-		if err := s.awaitAck(stream, c, pending, acks, recvErr); err != nil {
+		if err := awaitAck(c, pending, acks, recvErr); err != nil {
 			return err
 		}
 
@@ -280,10 +312,30 @@ func (s *Server) sync(stream treevialpb.ObjectSync_SyncServer) error {
 		case pending = <-c.notify:
 		case err := <-recvErr:
 			return err
-		case <-stream.Context().Done():
-			return stream.Context().Err()
 		}
 	}
+}
+
+// register reads the opening message, in which the client names itself and
+// states what it already holds.
+func register(conn *wire.Conn) (string, plumbing.Hash, error) {
+	msg, err := conn.ReadClientMessage()
+	if err != nil {
+		return "", plumbing.ZeroHash, err
+	}
+
+	if msg.Kind != wire.Register {
+		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid,
+			"first message must be a registration")
+	}
+
+	// The ID is interpolated into a ref path, so it is checked here, before
+	// it reaches anything that builds a path from it.
+	if err := treevial.ValidateID(msg.ClientID); err != nil {
+		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+	}
+
+	return msg.ClientID, msg.Hash, nil
 }
 
 // connect prepares the client's objects and registers it. Only one connection
@@ -294,7 +346,8 @@ func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error)
 	if _, taken := s.clients[clientID]; taken {
 		s.mu.Unlock()
 
-		return nil, status.Errorf(codes.AlreadyExists, "client %q is already connected", clientID)
+		return nil, treevial.Errorf(treevial.CodeAlreadyExists,
+			"client %q is already connected", clientID)
 	}
 	// Claim the ID before preparing, so a second connection racing this one
 	// cannot have data prepared for it too.
@@ -307,7 +360,8 @@ func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error)
 		delete(s.clients, clientID)
 		s.mu.Unlock()
 
-		return nil, status.Errorf(codes.Internal, "prepare data for %q: %v", clientID, err)
+		return nil, treevial.Errorf(treevial.CodeInternal,
+			"prepare data for %q: %v", clientID, err)
 	}
 
 	c := &client{
@@ -326,8 +380,8 @@ func (s *Server) connect(clientID string, synced plumbing.Hash) (*client, error)
 	return c, nil
 }
 
-// disconnect is the other half of connect: it runs when a client's stream ends,
-// however it ended, and gives the provider its chance to let go.
+// disconnect is the other half of connect: it runs when a client's connection
+// ends, however it ended, and gives the provider its chance to let go.
 func (s *Server) disconnect(c *client) {
 	s.mu.Lock()
 	// Only drop the entry if it is still this connection's.
@@ -341,17 +395,11 @@ func (s *Server) disconnect(c *client) {
 
 // awaitAck blocks until the client confirms it has interpreted the update, so
 // the server's idea of the client's state never runs ahead of reality.
-func (s *Server) awaitAck(
-	stream treevialpb.ObjectSync_SyncServer,
-	c *client,
-	hash plumbing.Hash,
-	acks <-chan *treevialpb.Ack,
-	recvErr <-chan error,
-) error {
+func awaitAck(c *client, hash plumbing.Hash, acks <-chan plumbing.Hash, recvErr <-chan error) error {
 	for {
 		select {
-		case ack := <-acks:
-			if ack.GetHash() != hash.String() {
+		case acked := <-acks:
+			if acked != hash {
 				// A stale acknowledgement for an earlier push.
 				continue
 			}
@@ -360,148 +408,52 @@ func (s *Server) awaitAck(
 			return nil
 		case err := <-recvErr:
 			return err
-		case <-stream.Context().Done():
-			return stream.Context().Err()
 		}
 	}
-}
-
-// clientIDFrom reads and validates the client's identity from the request
-// header. The ID names the ref the client is served, so it is checked here
-// before it reaches anything that builds a path from it.
-func clientIDFrom(ctx context.Context) (string, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return "", status.Errorf(codes.InvalidArgument, "request carries no metadata")
-	}
-
-	values := md.Get(treevial.IDHeader)
-	if len(values) == 0 {
-		return "", status.Errorf(codes.InvalidArgument, "request has no %s header", treevial.IDHeader)
-	}
-	if len(values) > 1 {
-		return "", status.Errorf(codes.InvalidArgument, "request has %d %s headers", len(values), treevial.IDHeader)
-	}
-
-	clientID := values[0]
-	if err := treevial.ValidateID(clientID); err != nil {
-		return "", status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-
-	return clientID, nil
-}
-
-// readRegistration reads the opening message of the stream, in which the client
-// states what it already holds.
-func readRegistration(stream treevialpb.ObjectSync_SyncServer) (plumbing.Hash, error) {
-	msg, err := stream.Recv()
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	reg := msg.GetRegister()
-	if reg == nil {
-		return plumbing.ZeroHash, status.Error(codes.InvalidArgument, "first message must be a registration")
-	}
-
-	synced := plumbing.ZeroHash
-	if hex := reg.GetSynced(); hex != "" {
-		if synced = plumbing.NewHash(hex); synced.IsZero() {
-			return plumbing.ZeroHash, status.Errorf(codes.InvalidArgument, "malformed synced hash %q", hex)
-		}
-	}
-
-	return synced, nil
 }
 
 // push sends the client the objects between the tree it holds and hash.
-func (s *Server) push(stream treevialpb.ObjectSync_SyncServer, c *client, hash plumbing.Hash) error {
+func (s *Server) push(conn *wire.Conn, c *client, hash plumbing.Hash) error {
 	missing, err := c.store.SelectSince(c.held(), hash)
 	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "objects since %s: %v", c.held(), err)
+		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
 
-	begin := &treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_Begin{Begin: &treevialpb.UpdateBegin{
-		Hash:        hash.String(),
-		ObjectCount: uint32(len(missing)),
-	}}}
-	if err := stream.Send(begin); err != nil {
+	if err := conn.WriteUpdate(hash, len(missing)); err != nil {
 		return err
 	}
 
-	if len(missing) > 0 {
-		w := &chunkWriter{stream: stream}
+	// The pack is framed as it is encoded, so it goes out while it is still
+	// being produced.
+	w := conn.PackWriter()
 
+	if len(missing) > 0 {
 		if _, err := c.store.EncodePack(w, missing); err != nil {
-			return status.Errorf(codes.Internal, "encode pack: %v", err)
-		}
-		if err := w.flush(); err != nil {
-			return err
+			return treevial.Errorf(treevial.CodeInternal, "encode pack: %v", err)
 		}
 	}
 
-	end := &treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_End{End: &treevialpb.UpdateEnd{}}}
-
-	return stream.Send(end)
+	return w.Close()
 }
 
-// readAcks drains the client's half of the stream. Registration aside, the only
-// thing a client sends is an acknowledgement.
-func readAcks(stream treevialpb.ObjectSync_SyncServer, acks chan<- *treevialpb.Ack) error {
+// readAcks drains the client's half of the connection. Registration aside, the
+// only thing a client sends is an acknowledgement.
+func readAcks(conn *wire.Conn, acks chan<- plumbing.Hash) error {
 	for {
-		msg, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
+		msg, err := conn.ReadClientMessage()
 		if err != nil {
 			return err
 		}
 
-		if ack := msg.GetAck(); ack != nil {
-			select {
-			case acks <- ack:
-			default:
-				// An unread acknowledgement is stale by
-				// definition; the newest one is what matters.
-			}
+		if msg.Kind != wire.Ack {
+			return fmt.Errorf("server: unexpected %s after registration", msg.Kind)
+		}
+
+		select {
+		case acks <- msg.Hash:
+		default:
+			// An unread acknowledgement is stale by definition; the
+			// newest one is what matters.
 		}
 	}
-}
-
-// chunkWriter turns the pack encoder's writes into PackChunk messages, so the
-// pack streams out as it is produced instead of being assembled first and sent
-// in one lump.
-type chunkWriter struct {
-	stream treevialpb.ObjectSync_SyncServer
-	buf    []byte
-}
-
-func (w *chunkWriter) Write(p []byte) (int, error) {
-	w.buf = append(w.buf, p...)
-
-	for len(w.buf) >= chunkSize {
-		if err := w.send(w.buf[:chunkSize]); err != nil {
-			return 0, err
-		}
-		w.buf = w.buf[chunkSize:]
-	}
-
-	return len(p), nil
-}
-
-// flush sends whatever is left in the buffer.
-func (w *chunkWriter) flush() error {
-	defer func() { w.buf = nil }()
-
-	return w.send(w.buf)
-}
-
-func (w *chunkWriter) send(b []byte) error {
-	if len(b) == 0 {
-		return nil
-	}
-
-	return w.stream.Send(&treevialpb.ServerMsg{Body: &treevialpb.ServerMsg_Chunk{
-		Chunk: &treevialpb.PackChunk{Data: b},
-	}})
 }

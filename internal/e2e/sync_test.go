@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -10,18 +11,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/client"
-	"github.com/holoplot/treevial/internal/demo"
-	"github.com/holoplot/treevial/internal/treevialpb"
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/receive"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/client"
+	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/internal/wire"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/receive"
+	"github.com/zonque/treevial/structtree"
 )
 
 func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
@@ -41,7 +37,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 	if prepared, _ := h.provider.counts("printer-7"); prepared != 1 {
 		t.Errorf("provider prepared data %d times, want once", prepared)
 	}
-	if want := uint32(16); u.ObjectCount != want {
+	if want := 16; u.ObjectCount != want {
 		t.Errorf("pushed %d objects, want %d", u.ObjectCount, want)
 	}
 
@@ -150,7 +146,7 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 	}
 	// The rewritten blob plus the Primary, Network and root trees on its
 	// path; everything else is pruned.
-	if want := uint32(4); second.ObjectCount != want {
+	if want := 4; second.ObjectCount != want {
 		t.Errorf("second push carried %d objects, want %d", second.ObjectCount, want)
 	}
 	if second.Previous != first.Hash {
@@ -299,8 +295,8 @@ func TestSecondConnectionWithTheSameIDIsRejected(t *testing.T) {
 		err = drainForError(t, c2, updates2)
 	}
 
-	if status.Code(err) != codes.AlreadyExists {
-		t.Errorf("got error %v (code %s), want AlreadyExists", err, status.Code(err))
+	if got := treevial.CodeOf(err); got != treevial.CodeAlreadyExists {
+		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeAlreadyExists)
 	}
 }
 
@@ -321,40 +317,33 @@ func TestClientWithAnUnusableIDIsRejected(t *testing.T) {
 		err = drainForError(t, c, updates)
 	}
 
-	if status.Code(err) != codes.InvalidArgument {
-		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeInvalid)
 	}
 	if prepared, _ := h.provider.counts("../../heads/somebody-else"); prepared != 0 {
 		t.Error("the server prepared data for an unusable client ID")
 	}
 }
 
-func TestStreamWithoutTheIDHeaderIsRejected(t *testing.T) {
+func TestAConnectionThatDoesNotRegisterFirstIsRejected(t *testing.T) {
 	h := newHarness(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	// The generated stub is used directly here, because treevialcli always sets
-	// the header.
-	conn, err := grpc.NewClient(h.addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// The wire package is used directly here, because a client always
+	// registers before anything else.
+	nc, err := net.Dial("tcp", h.addr)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer nc.Close()
 
-	stream, err := treevialpb.NewObjectSyncClient(conn).Sync(ctx)
-	if err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
+	conn := wire.NewConn(nc)
 
-	register := &treevialpb.ClientMsg{Body: &treevialpb.ClientMsg_Register{Register: &treevialpb.Register{}}}
-	if err := stream.Send(register); err != nil {
-		t.Fatalf("Send: %v", err)
+	if err := conn.WriteAck(plumbing.NewHash("1111111111111111111111111111111111111111")); err != nil {
+		t.Fatalf("WriteAck: %v", err)
 	}
 
-	if _, err = stream.Recv(); status.Code(err) != codes.InvalidArgument {
-		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	if _, err = conn.ReadServerMessage(); treevial.CodeOf(err) != treevial.CodeInvalid {
+		t.Errorf("got error %v (code %s), want %s", err, treevial.CodeOf(err), treevial.CodeInvalid)
 	}
 }
 
@@ -377,8 +366,8 @@ func TestSubscribingWithAnUnknownSyncedHashFails(t *testing.T) {
 		err = drainForError(t, c, updates)
 	}
 
-	if status.Code(err) != codes.InvalidArgument {
-		t.Errorf("got error %v (code %s), want InvalidArgument", err, status.Code(err))
+	if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeInvalid)
 	}
 }
 

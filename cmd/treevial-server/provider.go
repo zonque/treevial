@@ -7,10 +7,10 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/internal/demo"
-	"github.com/holoplot/treevial/objects"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/structtree"
 )
 
 // clientData is everything the server holds for one client: the Go value being

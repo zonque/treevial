@@ -19,11 +19,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/client"
-	"github.com/holoplot/treevial/internal/demo"
-	"github.com/holoplot/treevial/receive"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/client"
+	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/receive"
+	"github.com/zonque/treevial/structtree"
 )
 
 func main() {

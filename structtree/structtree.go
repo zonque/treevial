@@ -31,7 +31,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/holoplot/treevial/objects"
+	"github.com/zonque/treevial/objects"
 )
 
 // protoMessage is the interface a struct must implement to be treated as a

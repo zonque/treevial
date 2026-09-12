@@ -15,11 +15,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/client"
-	"github.com/holoplot/treevial/structtree"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/client"
+	"github.com/zonque/treevial/structtree"
 
-	"github.com/holoplot/treevial-consumer-example/settings"
+	"github.com/zonque/treevial-consumer-example/settings"
 )
 
 func main() {

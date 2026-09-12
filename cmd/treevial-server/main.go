@@ -20,8 +20,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/holoplot/treevial"
-	"github.com/holoplot/treevial/server"
+	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/server"
 )
 
 func main() {
