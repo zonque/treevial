@@ -89,8 +89,9 @@ const MaxRefLength = 512
 // The server takes the ref a client sends verbatim, so this is the boundary
 // that keeps a malformed one out of whatever it is keyed on. The rules are a
 // conservative subset of git's own: under refs/, no empty or dot-leading
-// component, none of the characters git's revision and refspec syntax claims,
-// no control characters, and not ending in the reserved .lock suffix.
+// component, no component ending in the reserved .lock suffix, none of the
+// characters git's revision and refspec syntax claims, and no control
+// characters.
 func ValidateRef(ref string) error {
 	switch {
 	case ref == "":
@@ -103,8 +104,6 @@ func ValidateRef(ref string) error {
 		return fmt.Errorf("ref %q contains %q", ref, "..")
 	case strings.Contains(ref, "@{"):
 		return fmt.Errorf("ref %q contains %q", ref, "@{")
-	case strings.HasSuffix(ref, ".lock"):
-		return fmt.Errorf("ref %q ends with the reserved %q suffix", ref, ".lock")
 	}
 
 	for _, r := range ref {
@@ -124,6 +123,9 @@ func ValidateRef(ref string) error {
 			return fmt.Errorf("ref %q has an empty component", ref)
 		case strings.HasPrefix(c, "."):
 			return fmt.Errorf("ref %q has a component starting with a dot", ref)
+		case strings.HasSuffix(c, ".lock"):
+			// Reserved on every component, not just the last.
+			return fmt.Errorf("ref %q has a component ending in %q", ref, ".lock")
 		}
 	}
 

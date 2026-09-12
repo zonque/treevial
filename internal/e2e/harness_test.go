@@ -89,6 +89,13 @@ func (p *testProvider) counts(ref string) (prepared, released int) {
 	return prepared, released
 }
 
+// The refs these tests subscribe to. Nothing about their shape is meaningful
+// to either side; they are just two distinct, well-formed refs.
+const (
+	refA = "refs/heads/printer-7/config"
+	refB = "refs/heads/printer-8/config"
+)
+
 type harness struct {
 	server   *server.Server
 	provider *testProvider
@@ -116,9 +123,9 @@ func newHarness(t *testing.T) *harness {
 	return &harness{server: srv, provider: provider, addr: lis.Addr().String()}
 }
 
-// subscribe connects a client under the given ID and waits for nothing; the
-// caller decides when to read.
-func (h *harness) subscribe(t *testing.T, ctx context.Context, clientID string) (*client.Client, <-chan client.Update) {
+// subscribe connects a client to ref and waits for nothing; the caller decides
+// when to read.
+func (h *harness) subscribe(t *testing.T, ctx context.Context, ref string) (*client.Client, <-chan client.Update) {
 	t.Helper()
 
 	c, err := client.Dial(ctx, h.addr)
@@ -127,7 +134,7 @@ func (h *harness) subscribe(t *testing.T, ctx context.Context, clientID string) 
 	}
 	t.Cleanup(func() { c.Close() })
 
-	updates, err := c.Subscribe(ctx, clientID)
+	updates, err := c.Subscribe(ctx, ref)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}

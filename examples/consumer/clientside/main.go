@@ -5,6 +5,9 @@
 // It decodes into the same settings.Settings the server walked — the two
 // sides share that one baseline struct, and nothing else about the wire
 // format need concern either of them.
+//
+// The ref is given on the command line: treevial attaches no meaning to its
+// shape, so how an application picks one is its own affair.
 package main
 
 import (
@@ -15,6 +18,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/client"
 	"github.com/zonque/treevial/structtree"
 
@@ -23,10 +27,10 @@ import (
 
 func main() {
 	addr := flag.String("server", "127.0.0.1:9418", "address of the treevial server")
-	id := flag.String("id", "", "client ID (required)")
+	ref := flag.String("ref", "", "head to subscribe to, e.g. refs/heads/printer-7/config (required)")
 	flag.Parse()
 
-	if err := client.ValidateID(*id); err != nil {
+	if err := treevial.ValidateRef(*ref); err != nil {
 		log.Fatal(err)
 	}
 
@@ -39,9 +43,9 @@ func main() {
 	}
 	defer conn.Close()
 
-	log.Printf("subscribing as %q, expecting %s", *id, client.RefFor(*id))
+	log.Printf("subscribing to %s", *ref)
 
-	updates, err := conn.Subscribe(ctx, *id)
+	updates, err := conn.Subscribe(ctx, *ref)
 	if err != nil {
 		log.Fatal(err)
 	}

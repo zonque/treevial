@@ -6,6 +6,10 @@
 // The configuration it decodes into is the same type the server walks: both
 // sides share one baseline struct, so the paths on the wire and the fields in
 // memory are the same thing seen from two ends.
+//
+// Turning a client ID into a head is this program's own convention, and lives
+// nowhere else: the client package subscribes to whatever ref it is given, and
+// the server serves whatever ref it is sent.
 package main
 
 import (
@@ -39,6 +43,13 @@ func main() {
 	}
 }
 
+// refFor is how this program decides which head a client follows. Another
+// application would map its own identities to refs however it liked — treevial
+// attaches no meaning to the shape.
+func refFor(clientID string) string {
+	return fmt.Sprintf("refs/heads/%s/config", clientID)
+}
+
 func run(addr, clientID string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -49,9 +60,11 @@ func run(addr, clientID string) error {
 	}
 	defer cli.Close()
 
-	log.Printf("subscribing as %q to %s, expecting %s", clientID, addr, client.RefFor(clientID))
+	ref := refFor(clientID)
 
-	updates, err := cli.Subscribe(ctx, clientID)
+	log.Printf("subscribing as %q to %s, asking for %s", clientID, addr, ref)
+
+	updates, err := cli.Subscribe(ctx, ref)
 	if err != nil {
 		return err
 	}

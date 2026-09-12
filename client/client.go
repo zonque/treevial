@@ -4,9 +4,10 @@
 // interprets whatever the server pushes, on the fly, without writing a byte to
 // disk.
 //
-// The head is built here, from the client's own ID, and the server takes it as
-// it is given. Which ref an ID maps to is therefore this package's business —
-// see [RefFor].
+// A caller names that head itself. This package attaches no meaning to a ref's
+// shape and knows of no scheme for deriving one — how an application decides
+// which ref a given device, tenant or installation should follow is entirely
+// its own business.
 //
 // A client repository depends on this package and on
 // [github.com/zonque/treevial/receive]; it does not need the server side at
@@ -37,10 +38,7 @@ const keepalivePeriod = 30 * time.Second
 // points at, what it pointed at before, how many objects the server had to
 // send, and the accumulated graph the client has interpreted so far.
 type Update struct {
-	// ClientID this client was created with.
-	ClientID string
-	// Ref the update arrived for: the head this client asked the server
-	// for, built from ClientID.
+	// Ref the update arrived for: the head this client asked for.
 	Ref  string
 	Hash plumbing.Hash
 	// Previous is the hash this subscription was at before the update, or
@@ -99,34 +97,31 @@ func (c *Client) setErr(err error) {
 	}
 }
 
-// Subscribe subscribes to the head belonging to clientID, as a client holding
-// nothing, and returns a channel of updates the server pushes. The server
-// prepares that data as the client connects.
-func (c *Client) Subscribe(ctx context.Context, clientID string) (<-chan Update, error) {
-	return c.Resume(ctx, clientID, plumbing.ZeroHash, receive.NewGraph())
+// Subscribe subscribes to ref as a client holding nothing, and returns a
+// channel of updates the server pushes. The server prepares that ref's data as
+// the client connects.
+func (c *Client) Subscribe(ctx context.Context, ref string) (<-chan Update, error) {
+	return c.Resume(ctx, ref, plumbing.ZeroHash, receive.NewGraph())
 }
 
-// Resume subscribes to the head belonging to clientID, declaring that the
-// client already holds the tree at synced, whose objects are in graph. That
-// single hash is the whole of the client's state: the server sends only the
-// difference between it and the head. Later updates accumulate into the same
-// graph.
+// Resume subscribes to ref, declaring that the client already holds the tree at
+// synced, whose objects are in graph. That single hash is the whole of the
+// client's state: the server sends only the difference between it and the head.
+// Later updates accumulate into the same graph.
 //
 // Cancelling ctx closes the connection, which ends the subscription and closes
 // the channel.
 func (c *Client) Resume(
 	ctx context.Context,
-	clientID string,
+	ref string,
 	synced plumbing.Hash,
 	graph *receive.Graph,
 ) (<-chan Update, error) {
-	// The ID is what a ref is built from, so it is checked here, before it
-	// reaches anything that interpolates it.
-	if err := ValidateID(clientID); err != nil {
+	// Checked here as well as on the server, so an unusable ref fails
+	// without a round trip; the rule itself lives in one place.
+	if err := treevial.ValidateRef(ref); err != nil {
 		return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
 	}
-
-	ref := RefFor(clientID)
 
 	if err := c.conn.WriteRegister(ref, synced); err != nil {
 		return nil, err
@@ -149,7 +144,7 @@ func (c *Client) Resume(
 		defer close(updates)
 		defer close(done)
 
-		if err := c.consume(ctx, clientID, ref, synced, graph, updates); err != nil {
+		if err := c.consume(ctx, ref, synced, graph, updates); err != nil {
 			c.setErr(err)
 		}
 	}()
@@ -162,7 +157,6 @@ func (c *Client) Resume(
 // is complete is it acknowledged and reported.
 func (c *Client) consume(
 	ctx context.Context,
-	clientID string,
 	ref string,
 	synced plumbing.Hash,
 	graph *receive.Graph,
@@ -204,7 +198,6 @@ func (c *Client) consume(
 
 		select {
 		case updates <- Update{
-			ClientID:    clientID,
 			Ref:         ref,
 			Hash:        msg.Hash,
 			Previous:    previous,

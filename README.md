@@ -22,7 +22,7 @@ go get github.com/zonque/treevial
 | Import | For | Pulls in |
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update`, `RefFor`, `ValidateID` | client repositories |
+| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
@@ -32,7 +32,7 @@ A client:
 
 ```go
 conn, err := client.Dial(ctx, "treevial.internal:9418")
-updates, err := conn.Subscribe(ctx, "printer-7")   // asks for refs/heads/printer-7/config
+updates, err := conn.Subscribe(ctx, "refs/heads/printer-7/config")
 
 for u := range updates {
 	changes, _ := u.Graph.Diff(u.Previous, u.Hash)  // only what moved
@@ -198,12 +198,14 @@ verbatim**. It derives nothing from it, and nothing about
 `refs/devices/hall-a/row-3/seat-9` and be served just the same. What a ref
 stands for is the provider's business.
 
-The Go client builds its ref from an ID with `client.RefFor`, so that
-convention lives in the client package and the shared package knows nothing of
-client IDs at all. Both halves are validated where they are used:
-`client.ValidateID` before an ID is interpolated into a ref, and
-`treevial.ValidateRef` on the server before a ref it was handed is keyed on.
-Neither rule is git's in full; both are conservative subsets of it.
+No package here knows of any scheme for deriving a ref. `cmd/treevial-client`
+happens to build one as `refs/heads/<id>/config` from an identifier it is given,
+but that is that program's own convention and lives in its `main.go` — an
+application maps its identities to refs however suits it.
+
+The one rule both sides share is `treevial.ValidateRef`, a conservative subset
+of git's own: the client applies it before sending, so an unusable ref fails
+without a round trip, and the server applies it to whatever it is sent.
 
 ## A client's state is one hash
 
@@ -246,8 +248,8 @@ ends when one side closes the connection, and not before.
 
 ```console
 $ go run ./cmd/treevial-server                       # prepares data per client on connect
-$ go run ./cmd/treevial-client -id printer-7         # served refs/heads/printer-7/config
-$ go run ./cmd/treevial-client -id sensor-3          # served its own tree, independently
+$ go run ./cmd/treevial-client -id printer-7         # asks for refs/heads/printer-7/config
+$ go run ./cmd/treevial-client -id sensor-3          # asks for its own ref, served independently
 ```
 
 Each client gets its own configuration struct, personalised with its ID, and

@@ -41,10 +41,10 @@ keyed on: under `refs/`, at most 512 bytes, no empty or dot-leading component,
 no `..`, no `@{`, no control characters or any of ``space ~ ^ : ? * [ \``, and
 not ending in `.lock`.
 
-The Go client builds its ref as `refs/heads/<id>/config` from an ID it is
-configured with, but that convention lives entirely in the client package. A
-different client may ask for `refs/devices/hall-a/row-3/seat-9` and be served
-just the same.
+No part of treevial derives a ref from anything. The example client happens to
+build one as `refs/heads/<id>/config` from an identifier it is given, but that
+convention lives in that program alone; another client may ask for
+`refs/devices/hall-a/row-3/seat-9` and be served just the same.
 
 `<synced>` is the tree the client already holds in full, or forty zeros if it
 holds nothing. Holding a tree means holding everything beneath it, so this one

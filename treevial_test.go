@@ -64,26 +64,27 @@ func TestValidateRefRejectsWhatGitWouldRefuse(t *testing.T) {
 	// boundary that keeps a malformed one out of whatever the server keys
 	// on it.
 	for _, ref := range []string{
-		"",                       // nothing to serve
-		"heads/main",             // not a ref
-		"refs",                   // no name under refs/
-		"refs/",                  // empty name
-		"refs/heads/",            // trailing slash
-		"refs/heads//main",       // empty component
-		"refs/heads/../../etc",   // climbs out
-		"refs/heads/.hidden",     // component starting with a dot
-		"refs/heads/with space",  // git forbids
-		"refs/heads/tilde~1",     // git revision syntax
-		"refs/heads/caret^",      // git revision syntax
-		"refs/heads/colon:",      // git refspec syntax
-		"refs/heads/question?",   // git forbids
-		"refs/heads/star*",       // git forbids
-		"refs/heads/open[",       // git forbids
-		"refs/heads/back\\slash", // git forbids
-		"refs/heads/main.lock",   // git reserves the suffix
-		"refs/heads/at@{1}",      // git revision syntax
-		"refs/heads/new\nline",   // control character
-		"refs/heads/tab\there",   // control character
+		"",                         // nothing to serve
+		"heads/main",               // not a ref
+		"refs",                     // no name under refs/
+		"refs/",                    // empty name
+		"refs/heads/",              // trailing slash
+		"refs/heads//main",         // empty component
+		"refs/heads/../../etc",     // climbs out
+		"refs/heads/.hidden",       // component starting with a dot
+		"refs/heads/with space",    // git forbids
+		"refs/heads/tilde~1",       // git revision syntax
+		"refs/heads/caret^",        // git revision syntax
+		"refs/heads/colon:",        // git refspec syntax
+		"refs/heads/question?",     // git forbids
+		"refs/heads/star*",         // git forbids
+		"refs/heads/open[",         // git forbids
+		"refs/heads/back\\slash",   // git forbids
+		"refs/heads/main.lock",     // git reserves the suffix
+		"refs/heads/x.lock/config", // reserved on any component, not just the last
+		"refs/heads/at@{1}",        // git revision syntax
+		"refs/heads/new\nline",     // control character
+		"refs/heads/tab\there",     // control character
 	} {
 		if err := treevial.ValidateRef(ref); err == nil {
 			t.Errorf("ValidateRef(%q) accepted an unusable ref", ref)
