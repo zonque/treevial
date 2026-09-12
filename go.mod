@@ -1,4 +1,4 @@
-module github.com/holoplot/treevial
+module github.com/zonque/treevial
 
 go 1.26.0
 

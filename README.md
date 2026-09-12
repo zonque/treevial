@@ -16,17 +16,17 @@ The two sides are separate packages, so a client repository and a server
 repository can each depend on only what it needs.
 
 ```console
-go get github.com/holoplot/treevial
+go get github.com/zonque/treevial
 ```
 
 | Import | For | Pulls in |
 |---|---|---|
-| `github.com/holoplot/treevial` | The shared contract: `IDHeader`, `RefFor`, `ValidateID` | both sides need it |
-| `github.com/holoplot/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
-| `github.com/holoplot/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
-| `github.com/holoplot/treevial/server` | `Server`, `Provider`, `ClientState` | server repositories |
-| `github.com/holoplot/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
-| `github.com/holoplot/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
+| `github.com/zonque/treevial` | The shared contract: `IDHeader`, `RefFor`, `ValidateID` | both sides need it |
+| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
+| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff` | client repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `ClientState` | server repositories |
+| `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
+| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Encoder`, `Decoder` | both sides, when syncing a Go value |
 
 A client:
 

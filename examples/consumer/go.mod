@@ -1,10 +1,10 @@
-module github.com/holoplot/treevial-consumer-example
+module github.com/zonque/treevial-consumer-example
 
 go 1.26.0
 
 require (
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/holoplot/treevial v0.0.0
+	github.com/zonque/treevial v0.0.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -28,4 +28,4 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
 
-replace github.com/holoplot/treevial => ../..
+replace github.com/zonque/treevial => ../..

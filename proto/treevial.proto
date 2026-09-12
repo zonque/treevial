@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package treevial.v1;
 
-option go_package = "github.com/holoplot/treevial/internal/treevialpb;treevialpb";
+option go_package = "github.com/zonque/treevial/internal/treevialpb;treevialpb";
 
 // ObjectSync carries a reversed-role git object transfer: the client dials and
 // keeps a single long-lived stream open, but it is the server that pushes
