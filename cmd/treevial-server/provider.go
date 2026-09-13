@@ -14,10 +14,12 @@ import (
 )
 
 // refData is everything the server holds for one ref: the Go value being
-// synchronised and the store its objects live in.
+// synchronised, the store its objects live in, and the builder that keeps the
+// two in step without redoing work.
 type refData struct {
-	config *demo.Config
-	store  *objects.Store
+	config  *demo.Config
+	store   *objects.Store
+	builder *structtree.Builder
 }
 
 // demoProvider gives each ref a configuration struct of its own, in a store of
@@ -49,7 +51,14 @@ func name(ref string) string {
 func (p *demoProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	data := &refData{config: demo.Example(name(ref)), store: objects.NewStore()}
 
-	root, err := structtree.Build(data.store, data.config)
+	builder, err := structtree.NewBuilder(data.store, data.config)
+	if err != nil {
+		return nil, plumbing.ZeroHash, err
+	}
+	data.builder = builder
+
+	// The first build has everything to do.
+	root, err := builder.Build()
 	if err != nil {
 		return nil, plumbing.ZeroHash, err
 	}
@@ -81,8 +90,12 @@ func (p *demoProvider) Release(ref string) {
 }
 
 // Retune changes one deeply nested field of a ref's configuration and rebuilds
-// the tree. Only the blob for that field and the trees above it are new, so the
-// push that follows is tiny.
+// the tree.
+//
+// The field it touched is the field it declares, so the builder encodes and
+// hashes that leaf alone and reuses the hashes it already holds for the rest.
+// Only the blob for that field and the trees above it are new, so the push that
+// follows is tiny — and so is the work behind it.
 func (p *demoProvider) Retune(ref string) (plumbing.Hash, error) {
 	p.mu.Lock()
 	data, ok := p.held[ref]
@@ -94,5 +107,5 @@ func (p *demoProvider) Retune(ref string) (plumbing.Hash, error) {
 
 	data.config.Network.Primary.MTU = 9000
 
-	return structtree.Build(data.store, data.config)
+	return data.builder.Build(&data.config.Network.Primary.MTU)
 }

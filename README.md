@@ -242,7 +242,8 @@ type provider struct{}
 
 func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	store := objects.NewStore()
-	// …build the tree behind ref…
+	// …build the tree behind ref, keeping a structtree.Builder alongside
+	// it if you will be changing the value later…
 	return store, root, nil
 }
 
