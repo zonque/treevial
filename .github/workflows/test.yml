@@ -1,0 +1,57 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version comes from go.mod, so this does not drift from what the
+      # module declares.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      # Race detector on: the server reads acknowledgements on one goroutine
+      # while pushing on another, which is where a mistake would hide.
+      - name: test
+        run: go test -race ./...
+
+      # A separate module with its own go.mod, so ./... above does not reach
+      # it. The suite builds it through TestSeparateModuleConsumersBuild;
+      # vetting it needs its own step.
+      - name: example module
+        working-directory: examples/consumer
+        run: |
+          go vet ./...
+          go build ./...
+
+      # Catches a dependency added without tidying, which would otherwise
+      # only show up for whoever next runs it.
+      - name: tidy
+        run: |
+          go mod tidy
+          (cd examples/consumer && go mod tidy)
+          git diff --exit-code -- go.mod go.sum examples/consumer/go.mod examples/consumer/go.sum

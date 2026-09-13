@@ -449,3 +449,8 @@ $ go test ./...             # includes building examples/consumer
 $ go test -short ./...      # skips the separate-module build
 $ go test -race ./...
 ```
+
+`.github/workflows/test.yml` runs the same checks on every pull request and on
+every push to `main`: gofmt, vet, the suite under the race detector, the example
+module, and `go mod tidy` against both modules to catch a dependency added
+without tidying.
