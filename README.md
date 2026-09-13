@@ -296,8 +296,7 @@ verbatim**. It derives nothing from it, and nothing about
 `refs/devices/hall-a/row-3/seat-9` and be served just the same. What a ref
 stands for is the provider's business.
 
-No package here knows of any scheme for deriving a ref.
-`demo/cmd/treevial-client`
+No package here knows of any scheme for deriving a ref. `demo/cmd/client`
 happens to build one as `refs/heads/<id>/config` from an identifier it is given,
 but that is that program's own convention and lives in its `main.go` — an
 application maps its identities to refs however suits it.
@@ -346,9 +345,9 @@ ends when one side closes the connection, and not before.
 ## Try the example
 
 ```console
-$ go run ./demo/cmd/treevial-server                  # prepares data per ref on connect
-$ go run ./demo/cmd/treevial-client -id printer-7    # asks for refs/heads/printer-7/config
-$ go run ./demo/cmd/treevial-client -id sensor-3     # asks for its own ref, served independently
+$ go run ./demo/cmd/server                     # prepares data per ref on connect
+$ go run ./demo/cmd/client -id printer-7       # asks for refs/heads/printer-7/config
+$ go run ./demo/cmd/client -id sensor-3        # asks for its own ref, served independently
 ```
 
 Each ref gets a configuration struct of its own, personalised with the name the

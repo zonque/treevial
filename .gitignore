@@ -1,8 +1,7 @@
-# Binaries from a single-package `go build`, which land in the working
-# directory named after their package. (`go build ./...` writes nothing, and in
-# examples/consumer the package directories already occupy those names.)
-/treevial-client
-/treevial-server
+# No entry is needed for the example binaries: `go build ./demo/cmd/client`
+# would write "client" into the working directory, where the client package
+# directory already occupies that name, so go refuses rather than writing one.
+# The same goes for the server. Use `go run`, or `go build -o`.
 
 # Test binaries from `go test -c`.
 *.test
