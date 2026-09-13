@@ -58,8 +58,8 @@ func TestRegisterCarriesTheRefAndState(t *testing.T) {
 		t.Fatalf("ReadClientMessage: %v", err)
 	}
 
-	if msg.Kind != wire.Register {
-		t.Errorf("kind %v, want Register", msg.Kind)
+	if msg.Type != wire.Register {
+		t.Errorf("type %v, want Register", msg.Type)
 	}
 	if msg.Ref != ref {
 		t.Errorf("ref %q, want %q", msg.Ref, ref)
@@ -113,8 +113,8 @@ func TestAckCarriesTheHash(t *testing.T) {
 		t.Fatalf("ReadClientMessage: %v", err)
 	}
 
-	if msg.Kind != wire.Ack {
-		t.Errorf("kind %v, want Ack", msg.Kind)
+	if msg.Type != wire.Ack {
+		t.Errorf("type %v, want Ack", msg.Type)
 	}
 	if msg.Hash != someHash {
 		t.Errorf("hash %s, want %s", msg.Hash, someHash)
@@ -131,9 +131,6 @@ func TestUpdateCarriesTheHashAndObjectCount(t *testing.T) {
 		t.Fatalf("ReadServerMessage: %v", err)
 	}
 
-	if msg.Kind != wire.Update {
-		t.Errorf("kind %v, want Update", msg.Kind)
-	}
 	if msg.Hash != someHash {
 		t.Errorf("hash %s, want %s", msg.Hash, someHash)
 	}

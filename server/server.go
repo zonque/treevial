@@ -325,7 +325,7 @@ func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 		return "", plumbing.ZeroHash, err
 	}
 
-	if msg.Kind != wire.Register {
+	if msg.Type != wire.Register {
 		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid,
 			"first message must be a registration")
 	}
@@ -446,9 +446,9 @@ func readAcks(conn *wire.Conn, acks chan<- plumbing.Hash) error {
 			return err
 		}
 
-		if msg.Kind != wire.Ack {
+		if msg.Type != wire.Ack {
 			return treevial.Errorf(treevial.CodeInvalid,
-				"unexpected %s after registration", msg.Kind)
+				"unexpected %s after registration", msg.Type)
 		}
 
 		select {

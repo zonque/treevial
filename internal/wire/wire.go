@@ -28,18 +28,18 @@ import (
 // under pktline.MaxPayloadSize, which a line may not exceed.
 const chunkSize = 32 * 1024
 
-// ClientKind is the kind of a message from client to server.
-type ClientKind int
+// ClientMessageType tells the two messages a client sends apart.
+type ClientMessageType int
 
 const (
 	// Register opens a subscription.
-	Register ClientKind = iota
+	Register ClientMessageType = iota
 	// Ack confirms an update was interpreted.
 	Ack
 )
 
 // String implements fmt.Stringer.
-func (k ClientKind) String() string {
+func (k ClientMessageType) String() string {
 	if k == Register {
 		return "register"
 	}
@@ -49,7 +49,7 @@ func (k ClientKind) String() string {
 
 // ClientMessage is a message from client to server.
 type ClientMessage struct {
-	Kind ClientKind
+	Type ClientMessageType
 	// Ref is the head the client asked for, set on a Register. It is
 	// carried verbatim: what the server makes of it is its own business.
 	Ref string
@@ -58,18 +58,14 @@ type ClientMessage struct {
 	Hash plumbing.Hash
 }
 
-// ServerKind is the kind of a message from server to client.
-type ServerKind int
-
-// Update announces a new state, followed by the pack carrying it.
-const Update ServerKind = iota
-
-// String implements fmt.Stringer.
-func (k ServerKind) String() string { return "update" }
-
-// ServerMessage is a message from server to client.
+// ServerMessage is a message from server to client: an update, announcing a
+// new state and preceding the pack that carries it.
+//
+// There is no discriminator because there is nothing to discriminate. The only
+// other thing a server sends is an error, and that comes back from
+// [Conn.ReadServerMessage] as an error rather than as a message. Should a
+// second kind of message ever arrive, this is where it would earn one.
 type ServerMessage struct {
-	Kind        ServerKind
 	Hash        plumbing.Hash
 	ObjectCount int
 }
@@ -163,7 +159,7 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 			return ClientMessage{}, err
 		}
 
-		return ClientMessage{Kind: Register, Ref: fields[1], Hash: hash}, nil
+		return ClientMessage{Type: Register, Ref: fields[1], Hash: hash}, nil
 
 	case "ack":
 		if len(fields) != 2 {
@@ -175,7 +171,7 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 			return ClientMessage{}, err
 		}
 
-		return ClientMessage{Kind: Ack, Hash: hash}, nil
+		return ClientMessage{Type: Ack, Hash: hash}, nil
 
 	default:
 		return ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: unknown client message %q", fields[0])
@@ -211,7 +207,7 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed object count in %q", line)
 		}
 
-		return ServerMessage{Kind: Update, Hash: hash, ObjectCount: objects}, nil
+		return ServerMessage{Hash: hash, ObjectCount: objects}, nil
 
 	case "error":
 		if len(fields) < 2 {
