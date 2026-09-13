@@ -128,12 +128,7 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 	// minimal second push.
 	waitForSync(t, h.server, refA, first.Hash)
 
-	store := h.provider.store(t, refA)
-
-	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
-	if err != nil {
-		t.Fatalf("ReplaceBlob: %v", err)
-	}
+	v2 := h.provider.retune(t, refA, 9000)
 	if err := h.server.SetHead(refA, v2); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
@@ -442,12 +437,7 @@ func TestClientStructFollowsALaterPush(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	store := h.provider.store(t, refA)
-
-	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
-	if err != nil {
-		t.Fatalf("ReplaceBlob: %v", err)
-	}
+	next := h.provider.retune(t, refA, 9000)
 	if err := h.server.SetHead(refA, next); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
@@ -519,12 +509,7 @@ func TestClientFollowsPushesIncrementally(t *testing.T) {
 
 	waitForSync(t, h.server, refA, first.Hash)
 
-	store := h.provider.store(t, refA)
-
-	next, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
-	if err != nil {
-		t.Fatalf("ReplaceBlob: %v", err)
-	}
+	next := h.provider.retune(t, refA, 9000)
 	if err := h.server.SetHead(refA, next); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}

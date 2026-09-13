@@ -16,26 +16,42 @@ import (
 	"github.com/zonque/treevial/internal/demo"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/server"
+	"github.com/zonque/treevial/structtree"
 )
 
-// testProvider prepares a ten-leaf tree per ref, labelled with the ref itself
+// refData is what the provider holds for one ref, the same way the example
+// server does: the value being synchronised, its store, and the builder that
+// keeps the two in step without redoing work.
+type refData struct {
+	config  *demo.Config
+	store   *objects.Store
+	builder *structtree.Builder
+}
+
+// testProvider prepares a configuration per ref, labelled with the ref itself
 // so a test can tell one subscriber's data from another's, and records the
 // lifecycle calls the server makes.
 type testProvider struct {
 	mu       sync.Mutex
-	stores   map[string]*objects.Store
+	held     map[string]*refData
 	prepared []string
 	released []string
 }
 
 func newTestProvider() *testProvider {
-	return &testProvider{stores: map[string]*objects.Store{}}
+	return &testProvider{held: map[string]*refData{}}
 }
 
 func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
-	store := objects.NewStore()
+	data := &refData{config: demo.Example(ref), store: objects.NewStore()}
 
-	root, err := demo.BuildTree(store, ref)
+	builder, err := structtree.NewBuilder(data.store, data.config)
+	if err != nil {
+		return nil, plumbing.ZeroHash, err
+	}
+	data.builder = builder
+
+	root, err := builder.Build()
 	if err != nil {
 		return nil, plumbing.ZeroHash, err
 	}
@@ -43,32 +59,42 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.stores[ref] = store
+	p.held[ref] = data
 	p.prepared = append(p.prepared, ref)
 
-	return store, root, nil
+	return data.store, root, nil
 }
 
 func (p *testProvider) Release(ref string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	delete(p.stores, ref)
+	delete(p.held, ref)
 	p.released = append(p.released, ref)
 }
 
-func (p *testProvider) store(t *testing.T, ref string) *objects.Store {
+// retune changes one deeply nested field and rebuilds, declaring the field it
+// touched so only that leaf is encoded again — the path the example server
+// takes, exercised here end to end.
+func (p *testProvider) retune(t *testing.T, ref string, mtu int) plumbing.Hash {
 	t.Helper()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	data, ok := p.held[ref]
+	p.mu.Unlock()
 
-	store, ok := p.stores[ref]
 	if !ok {
-		t.Fatalf("no store prepared for %q", ref)
+		t.Fatalf("no data prepared for %q", ref)
 	}
 
-	return store
+	data.config.Network.Primary.MTU = mtu
+
+	root, err := data.builder.Build(&data.config.Network.Primary.MTU)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	return root
 }
 
 func (p *testProvider) counts(ref string) (prepared, released int) {

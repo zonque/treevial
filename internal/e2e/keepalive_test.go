@@ -30,12 +30,7 @@ func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	}
 
 	// The connection must still be usable for an unprompted push.
-	store := h.provider.store(t, refA)
-
-	v2, err := store.ReplaceBlob(first.Hash, "Network/Primary/MTU", []byte("9000"))
-	if err != nil {
-		t.Fatalf("ReplaceBlob: %v", err)
-	}
+	v2 := h.provider.retune(t, refA, 9000)
 	if err := h.server.SetHead(refA, v2); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
