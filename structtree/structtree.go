@@ -247,7 +247,7 @@ func (m Mapper) Build(store *objects.Store, v any) (plumbing.Hash, error) {
 			return plumbing.ZeroHash, fmt.Errorf("structtree: store %s: %w", leaf.Path, err)
 		}
 
-		root.insert(strings.Split(leaf.Path, "/"), hash)
+		root.insertPath(leaf.Path, hash)
 	}
 
 	return root.store(store)
@@ -262,23 +262,37 @@ type node struct {
 	blob     plumbing.Hash
 }
 
-func (n *node) insert(path []string, blob plumbing.Hash) {
-	name := path[0]
+// insertPath places a blob at a slash-separated path, creating the nodes above
+// it, and walks the path in place rather than allocating a slice of its parts
+// for every leaf.
+func (n *node) insertPath(path string, blob plumbing.Hash) {
+	for {
+		slash := strings.IndexByte(path, '/')
+		if slash < 0 {
+			break
+		}
 
-	child, ok := n.children[name]
+		name := path[:slash]
+
+		child, ok := n.children[name]
+		if !ok {
+			child = &node{children: map[string]*node{}}
+			n.children[name] = child
+			n.order = append(n.order, name)
+		}
+
+		n = child
+		path = path[slash+1:]
+	}
+
+	child, ok := n.children[path]
 	if !ok {
 		child = &node{children: map[string]*node{}}
-		n.children[name] = child
-		n.order = append(n.order, name)
+		n.children[path] = child
+		n.order = append(n.order, path)
 	}
 
-	if len(path) == 1 {
-		child.blob = blob
-
-		return
-	}
-
-	child.insert(path[1:], blob)
+	child.blob = blob
 }
 
 // store writes the node and everything beneath it, returning the tree hash.
