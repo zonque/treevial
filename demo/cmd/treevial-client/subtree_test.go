@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 )
 
 func TestChangedSubtreeIsTheParentOfALoneChange(t *testing.T) {
@@ -45,16 +45,16 @@ func TestChangedSubtreeOfATopLevelLeafIsTheRoot(t *testing.T) {
 }
 
 func TestValueAtReachesNestedFieldsThroughPointers(t *testing.T) {
-	config := demo.Example("printer-7")
+	config := shared.Example("printer-7")
 
 	got, err := valueAt(config, "Network/Primary")
 	if err != nil {
 		t.Fatalf("valueAt: %v", err)
 	}
 
-	iface, ok := got.(demo.Interface)
+	iface, ok := got.(shared.Interface)
 	if !ok {
-		t.Fatalf("got %T, want demo.Interface", got)
+		t.Fatalf("got %T, want shared.Interface", got)
 	}
 	if iface.MTU != 1500 {
 		t.Errorf("MTU: got %d, want 1500", iface.MTU)
@@ -62,20 +62,20 @@ func TestValueAtReachesNestedFieldsThroughPointers(t *testing.T) {
 }
 
 func TestValueAtReturnsTheWholeValueForTheRoot(t *testing.T) {
-	config := demo.Example("printer-7")
+	config := shared.Example("printer-7")
 
 	got, err := valueAt(config, "")
 	if err != nil {
 		t.Fatalf("valueAt: %v", err)
 	}
 
-	if _, ok := got.(demo.Config); !ok {
-		t.Errorf("got %T, want demo.Config", got)
+	if _, ok := got.(shared.Config); !ok {
+		t.Errorf("got %T, want shared.Config", got)
 	}
 }
 
 func TestValueAtReportsAnUnsetBranch(t *testing.T) {
-	config := demo.Example("printer-7")
+	config := shared.Example("printer-7")
 
 	// Secondary is nil, so there is nothing to show under it.
 	if _, err := valueAt(config, "Network/Secondary"); err == nil {
@@ -84,7 +84,7 @@ func TestValueAtReportsAnUnsetBranch(t *testing.T) {
 }
 
 func TestValueAtReportsAPathTheStructDoesNotHave(t *testing.T) {
-	config := demo.Example("printer-7")
+	config := shared.Example("printer-7")
 
 	if _, err := valueAt(config, "Network/Telemetry"); err == nil {
 		t.Error("valueAt resolved a path the struct does not have")

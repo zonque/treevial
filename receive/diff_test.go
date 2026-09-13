@@ -8,7 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/receive"
 )
@@ -59,7 +59,7 @@ func TestDiffOfAnUnchangedTreeIsEmpty(t *testing.T) {
 	s := objects.NewStore()
 	g := receive.NewGraph()
 
-	root, err := demo.BuildTree(s, "v1")
+	root, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestDiffReportsOnlyTheRewrittenLeaf(t *testing.T) {
 	s := objects.NewStore()
 	g := receive.NewGraph()
 
-	v1, err := demo.BuildTree(s, "v1")
+	v1, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}

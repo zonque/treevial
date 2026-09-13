@@ -8,7 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/receive"
 )
@@ -65,7 +65,7 @@ func demoPack(t *testing.T) (*objects.Store, plumbing.Hash, []byte) {
 
 	s := objects.NewStore()
 
-	root, err := demo.BuildTree(s, "v1")
+	root, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}

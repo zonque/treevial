@@ -24,7 +24,7 @@ import (
 	"syscall"
 
 	"github.com/zonque/treevial/client"
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/receive"
 	"github.com/zonque/treevial/structtree"
 )
@@ -70,7 +70,7 @@ func run(addr, clientID string) error {
 	}
 
 	// The value being synchronised. Each update settles it completely.
-	var config demo.Config
+	var config shared.Config
 
 	push := 0
 
@@ -102,7 +102,7 @@ func run(addr, clientID string) error {
 
 // render describes an update from both ends: which paths moved in the tree,
 // and the part of the Go value they landed in.
-func render(u client.Update, config *demo.Config) (string, error) {
+func render(u client.Update, config *shared.Config) (string, error) {
 	// Only the subtrees that moved are decoded; on a push that changed one
 	// field that is one leaf, whatever the size of the rest of the struct.
 	if err := structtree.ApplySince(config, u.Graph, u.Previous, u.Hash); err != nil {

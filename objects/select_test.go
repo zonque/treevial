@@ -5,14 +5,14 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 )
 
 func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {
 	s := objects.NewStore()
 
-	root, err := demo.BuildTree(s, "v1")
+	root, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestSelectSinceNothingReturnsWholeGraph(t *testing.T) {
 func TestSelectSinceTheSameTreeReturnsNothing(t *testing.T) {
 	s := objects.NewStore()
 
-	root, err := demo.BuildTree(s, "v1")
+	root, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestSelectSinceTheSameTreeReturnsNothing(t *testing.T) {
 func TestSelectSinceReturnsOnlyThePathToAChangedLeaf(t *testing.T) {
 	s := objects.NewStore()
 
-	v1, err := demo.BuildTree(s, "v1")
+	v1, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree v1: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestSelectSinceReturnsOnlyThePathToAChangedLeaf(t *testing.T) {
 func TestSelectSinceFailsWhenTheClientClaimsAnUnknownState(t *testing.T) {
 	s := objects.NewStore()
 
-	root, err := demo.BuildTree(s, "v1")
+	root, err := shared.BuildTree(s, "v1")
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}

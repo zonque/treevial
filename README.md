@@ -296,7 +296,8 @@ verbatim**. It derives nothing from it, and nothing about
 `refs/devices/hall-a/row-3/seat-9` and be served just the same. What a ref
 stands for is the provider's business.
 
-No package here knows of any scheme for deriving a ref. `cmd/treevial-client`
+No package here knows of any scheme for deriving a ref.
+`demo/cmd/treevial-client`
 happens to build one as `refs/heads/<id>/config` from an identifier it is given,
 but that is that program's own convention and lives in its `main.go` — an
 application maps its identities to refs however suits it.
@@ -345,9 +346,9 @@ ends when one side closes the connection, and not before.
 ## Try the example
 
 ```console
-$ go run ./cmd/treevial-server                       # prepares data per ref on connect
-$ go run ./cmd/treevial-client -id printer-7         # asks for refs/heads/printer-7/config
-$ go run ./cmd/treevial-client -id sensor-3          # asks for its own ref, served independently
+$ go run ./demo/cmd/treevial-server                  # prepares data per ref on connect
+$ go run ./demo/cmd/treevial-client -id printer-7    # asks for refs/heads/printer-7/config
+$ go run ./demo/cmd/treevial-client -id sensor-3     # asks for its own ref, served independently
 ```
 
 Each ref gets a configuration struct of its own, personalised with the name the
@@ -388,7 +389,7 @@ push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
   + Audio/Delay  413477a4  "\x10\x80\xb6\xdc\x05"
   + Device/Installed  664684c1  "\"2023-11-14T22:13:20Z\""
   …
-  *demo.Config = { …the whole value… }
+  *shared.Config = { …the whole value… }
 
 push 2: refs/heads/printer-7/config -> 30e5ce80…, 4 objects received
     040000 tree 8076d140…	Audio                   ← unchanged
@@ -412,7 +413,7 @@ whole mechanism, visible: it is why the second push carried four objects, why
 Seventeen objects the first time — eleven leaves and six trees — and four the
 second: the rewritten blob plus `Primary`, `Network` and the root.
 
-The value it prints is a `demo.Config` — the same type the server walked —
+The value it prints is a `shared.Config` — the same type the server walked —
 filled in by `ApplySince`, so on the second push exactly one leaf was decoded
 even though the whole struct is current.
 
@@ -427,7 +428,8 @@ even though the whole struct is current.
 | `objects/` | In-memory store, `SelectSince` object arithmetic, pack encoding |
 | `structtree/` | Walks a Go struct with reflect onto a tree and back again, whole or incrementally in either direction |
 | `internal/wire/` | The protocol: pkt-line framed messages over a connection |
-| `internal/demo/` | The example configuration struct, used by `cmd/` and the tests |
+| `demo/cmd/` | The runnable example: a server and a client |
+| `demo/shared/` | The configuration struct both halves of the example share, used by the tests too |
 | `internal/e2e/` | Client and server together over a real TCP listener |
 | `examples/consumer/` | A separate module: a shared `settings` struct, and each side importing only its own half |
 | `PROTOCOL.md` | The wire contract |

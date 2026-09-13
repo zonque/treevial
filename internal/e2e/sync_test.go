@@ -13,7 +13,7 @@ import (
 
 	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/client"
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/internal/wire"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/receive"
@@ -45,7 +45,7 @@ func TestServerPreparesDataWhenAClientConnects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Leaves: %v", err)
 	}
-	if want := demo.LeafCount; len(leaves) != want {
+	if want := shared.LeafCount; len(leaves) != want {
 		t.Fatalf("client reconstructed %d leaves, want %d", len(leaves), want)
 	}
 }
@@ -396,7 +396,7 @@ func TestClientRebuildsTheStructTheServerPublished(t *testing.T) {
 
 	// Both sides share the same baseline struct, so the client decodes
 	// into the very type the server walked.
-	var got demo.Config
+	var got shared.Config
 	if err := applyUpdate(t, &got, first); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestClientStructFollowsALaterPush(t *testing.T) {
 	first := nextUpdate(t, updates)
 	waitForSync(t, h.server, refA, first.Hash)
 
-	var cfg demo.Config
+	var cfg shared.Config
 	if err := applyUpdate(t, &cfg, first); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestClientFollowsPushesIncrementally(t *testing.T) {
 
 	// An Update carries exactly what ApplySince needs: the hash the
 	// subscription was at, and the one it has moved to.
-	var config demo.Config
+	var config shared.Config
 
 	first := nextUpdate(t, updates)
 	if err := structtree.ApplySince(&config, first.Graph, first.Previous, first.Hash); err != nil {

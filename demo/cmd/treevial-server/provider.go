@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/structtree"
 )
@@ -17,7 +17,7 @@ import (
 // synchronised, the store its objects live in, and the builder that keeps the
 // two in step without redoing work.
 type refData struct {
-	config  *demo.Config
+	config  *shared.Config
 	store   *objects.Store
 	builder *structtree.Builder
 }
@@ -49,7 +49,7 @@ func name(ref string) string {
 
 // Prepare implements server.Provider.
 func (p *demoProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
-	data := &refData{config: demo.Example(name(ref)), store: objects.NewStore()}
+	data := &refData{config: shared.Example(name(ref)), store: objects.NewStore()}
 
 	builder, err := structtree.NewBuilder(data.store, data.config)
 	if err != nil {
@@ -69,7 +69,7 @@ func (p *demoProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error
 	p.mu.Unlock()
 
 	log.Printf("[%s] prepared -> %s, %d leaves walked from the struct (%d refs held)",
-		ref, root, demo.LeafCount, held)
+		ref, root, shared.LeafCount, held)
 
 	return data.store, root, nil
 }

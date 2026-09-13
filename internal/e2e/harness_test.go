@@ -13,7 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/zonque/treevial/client"
-	"github.com/zonque/treevial/internal/demo"
+	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/server"
 	"github.com/zonque/treevial/structtree"
@@ -23,7 +23,7 @@ import (
 // server does: the value being synchronised, its store, and the builder that
 // keeps the two in step without redoing work.
 type refData struct {
-	config  *demo.Config
+	config  *shared.Config
 	store   *objects.Store
 	builder *structtree.Builder
 }
@@ -43,7 +43,7 @@ func newTestProvider() *testProvider {
 }
 
 func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
-	data := &refData{config: demo.Example(ref), store: objects.NewStore()}
+	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
 
 	builder, err := structtree.NewBuilder(data.store, data.config)
 	if err != nil {

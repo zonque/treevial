@@ -1,7 +1,7 @@
 // Package demo holds the example value that the treevial example programs
 // synchronise: a deeply nested Go struct, mapped onto a git tree by
 // structtree. It is not part of the library's API.
-package demo
+package shared
 
 import (
 	"fmt"
