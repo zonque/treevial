@@ -1,10 +1,17 @@
-# treevial — reversed-role git object transfer
+# treevial — server-driven sync over git objects
 
-`treevial` moves git objects the wrong way round. The client dials the server
-and names two things — the head it wants to follow, and the tree it already
-holds — and then asks for nothing further. From there the **server** prepares
-that ref's objects and pushes them down the connection, of its own accord,
-whenever the ref moves.
+`treevial` keeps a client in sync with data the server owns. The client dials
+in, names the head it wants to follow and the tree it already holds, and then
+asks for nothing further: the **server** prepares that ref's objects and pushes
+them down the connection, of its own accord, whenever the ref moves. Nobody
+polls, and nothing is fetched on request.
+
+Git's object model is what makes that cheap. Content addressing means a subtree
+whose hash has not moved needs neither sending nor decoding, so an update after
+a small change costs a few objects however large the whole is — and the
+machinery for saying so, packfiles and trees and blobs, already exists and is
+well understood. The roles are the other way around from git's usual
+arrangement, and that is the point: the server decides when to send.
 
 Neither side touches the filesystem. There is no repository, no `.git`
 directory, no temporary pack file. The server keeps its object graph in memory,
@@ -84,8 +91,8 @@ struct becomes a subtree. Unexported fields are skipped, and so are nil pointers
 — which makes a field going nil read as a deletion and a field appearing read as
 an addition.
 
-That fallback matters most for what it gets wrong, and it is worth knowing
-before it bites: **a `time.Time` is a struct, is not a protobuf message, and has
+That fallback has one blind spot, and it is worth knowing before it bites: **a
+`time.Time` is a struct, is not a protobuf message, and has
 only unexported fields**, so the walker descends into it, finds nothing it may
 read, and the field vanishes from the tree entirely. Tag it and it is stored
 whole — JSON already knows how to write a time, so no encoding of your own is
@@ -233,8 +240,8 @@ client                                     server
 
 One long-lived TCP connection carries all of it, so the server can push the
 instant a ref changes. Every message is a pkt-line — four hex length digits then
-the payload — which is git's own framing and comes from go-git, so there is no
-hand-rolled framing to get wrong.
+the payload — which is git's own framing, and comes from go-git rather than
+being hand-rolled here.
 
 Refs point **directly at a tree**. No commit objects are involved.
 

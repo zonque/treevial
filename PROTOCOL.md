@@ -10,15 +10,15 @@ digits giving the length of the whole line including those four digits, then the
 payload.
 
 ```
-0016register printer-7
-^^^^ 0x16 = 22 bytes in total
+0031ack 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
+^^^^ 0x31 = 49 bytes in all: these four, 44 of text, and a newline
 ```
 
-A line of `0000` is a **flush-pkt** and carries no payload. It is used once, to
-close a pack.
+A line of `0000` is a **flush-pkt** and carries no payload. It appears once per
+update, closing the pack.
 
 Payloads are at most 65516 bytes. Text lines end with `\n`, which is part of the
-payload and not significant.
+payload and carries no meaning.
 
 ## Messages
 
@@ -39,7 +39,7 @@ between the client and whatever serves it.
 The server checks only that `<ref>` is a usable git ref name, since it will be
 keyed on: under `refs/`, at most 512 bytes, no empty or dot-leading component,
 no `..`, no `@{`, no control characters or any of ``space ~ ^ : ? * [ \``, and
-not ending in `.lock`.
+no component ending in `.lock`.
 
 No part of treevial derives a ref from anything. The example client happens to
 build one as `refs/heads/<id>/config` from an identifier it is given, but that
@@ -66,7 +66,9 @@ many objects follow in decimal; it may be `0`, in which case the client is
 already current and the flush-pkt follows immediately.
 
 The pack is a standard git packfile, split across as many pkt-lines as it takes
-and closed by a flush-pkt. It is framed as it is encoded, so the receiver can
+and closed by a flush-pkt. It may be split at any point, so a reader has to
+treat the lines as a byte stream rather than expecting object boundaries to fall
+on them. It is framed as it is encoded, so the receiver can
 inflate objects while the rest is still arriving. It contains no deltas, so
 every object stands alone.
 
@@ -82,20 +84,25 @@ for people, not for matching on.
 
 ## An exchange
 
+Taken off the wire, byte for byte:
+
 ```
-client → 0040register refs/heads/printer-7/config 0000000000000000000000000000000000000000
-server → 0039update df0e0e1cd7146ab580338deb67e66bd05d42c1e8 16
-server → 8004<pack bytes>
+client → 0052register refs/heads/printer-7/config 0000000000000000000000000000000000000000
+server → 0037update 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805 17
+server → 037a<886 bytes of pack, starting 50 41 43 4b — "PACK">
 server → 0000
-client → 002fack df0e0e1cd7146ab580338deb67e66bd05d42c1e8
+client → 0031ack 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
 
          … the server's data changes …
 
-server → 0039update b501ed1768b41ecd5086ec43345aece2a0fb5d1c 4
-server → 0231<pack bytes>
+server → 0036update 30e5ce8082820717b3fb5fec3e962c1d62103e14 4
+server → 015f<347 bytes of pack>
 server → 0000
-client → 002fack b501ed1768b41ecd5086ec43345aece2a0fb5d1c
+client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
 ```
+
+Seventeen objects the first time and four the second, because the four are all
+that moved: the second pack is 347 bytes against 886.
 
 ## Connection lifetime
 

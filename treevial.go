@@ -1,4 +1,5 @@
-// Package treevial implements a reversed-role git object transfer.
+// Package treevial keeps a client in sync with data a server owns, using git's
+// object model to carry it.
 //
 // The client dials the server and keeps one long-lived connection open. It
 // names the head it wants to follow and the tree it already holds, and asks for
