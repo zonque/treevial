@@ -26,7 +26,7 @@ func parseListing(t *testing.T, out string) []listed {
 
 	var rows []listed
 
-	for _, raw := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+	for raw := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		m := line.FindStringSubmatch(raw)
 		if m == nil {
 			t.Fatalf("line %q does not parse", raw)

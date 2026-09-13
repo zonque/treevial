@@ -58,7 +58,7 @@ func valueAt(root any, path string) (any, error) {
 		return v.Interface(), nil
 	}
 
-	for _, name := range strings.Split(path, "/") {
+	for name := range strings.SplitSeq(path, "/") {
 		if v.Kind() != reflect.Struct {
 			return nil, fmt.Errorf("%s is not a struct", v.Kind())
 		}

@@ -230,7 +230,7 @@ func (b *Builder) dirty(changed []any) (paths, error) {
 // following a pointer so that both spellings of a pointer field work: the
 // address of the field, and the pointer it holds.
 func mark(v reflect.Value, path string, wanted []target, matched []bool, found paths) {
-	for step := 0; step < 2; step++ {
+	for range 2 {
 		if v.CanAddr() {
 			for i, w := range wanted {
 				if w.addr == v.Addr().Pointer() && w.typ == v.Type() {

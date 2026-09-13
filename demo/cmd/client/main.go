@@ -175,7 +175,7 @@ func render(u client.Update, config *shared.Config) (string, error) {
 func indent(block string) string {
 	var b strings.Builder
 
-	for _, l := range strings.Split(strings.TrimSuffix(block, "\n"), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSuffix(block, "\n"), "\n") {
 		fmt.Fprintf(&b, "    %s\n", l)
 	}
 

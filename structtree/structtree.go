@@ -68,7 +68,7 @@ import (
 
 // protoMessage is the interface a struct must implement to be treated as a
 // leaf rather than descended into.
-var protoMessage = reflect.TypeOf((*proto.Message)(nil)).Elem()
+var protoMessage = reflect.TypeFor[proto.Message]()
 
 // Leaf is one value of a walked struct, together with the path its blob is
 // stored at.
