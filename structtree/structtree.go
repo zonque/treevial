@@ -37,10 +37,18 @@
 // For types you do not own, and so cannot tag, a [Mapper] carries a rule of
 // your own alongside the encoding that serves it.
 //
+// # What a change costs
+//
 // Because a leaf's blob changes only when that leaf's bytes change, and a
 // subtree's hash changes only when something beneath it changes, updating one
-// deep field costs one blob plus the trees on its path — however large the
-// rest of the struct is.
+// deep field produces one blob plus the trees on its path — however large the
+// rest of the value is. That is what the receiving side is sent, and what
+// [Mapper.ApplySince] has to decode.
+//
+// Producing them is another matter. [Mapper.Build] encodes and hashes every
+// leaf, so it pays for the whole value however little of it moved. Use a
+// [Builder] to pay only for what changed: it keeps the hashes from its last
+// build and re-encodes only what you tell it has moved.
 package structtree
 
 import (

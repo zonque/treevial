@@ -34,7 +34,7 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
-| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
+| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
 A client:
 
@@ -109,7 +109,7 @@ m := structtree.Mapper{
 	},
 }
 
-root, err := m.Build(store, cfg)      // and m.Walk, m.Apply, m.ApplySince
+root, err := m.Build(store, cfg)   // and m.Walk, m.Apply, m.ApplySince, m.NewBuilder
 ```
 
 A `Mapper` holds all three decisions — which fields are leaves, how a leaf
@@ -191,7 +191,49 @@ re-encodes differently looks like a change to everyone downstream.
 
 This is what makes the git machinery pay off: change one deeply nested field
 and only that blob and the trees on its path are new, however large the rest of
-the struct is.
+the struct is. That is what gets sent, and what `ApplySince` has to decode.
+
+### Rebuilding only what changed
+
+Producing those objects is a separate question from sending them. `Build`
+encodes and hashes every leaf, so it pays for the whole value however little of
+it moved — on a few hundred megabytes that is most of a second for a one-field
+change. A `Builder` keeps the hashes from its last build and re-encodes only
+what you tell it has moved:
+
+```go
+b, err := structtree.NewBuilder(store, cfg)
+root, err := b.Build()                        // everything, the first time
+
+cfg.Network.Primary.MTU = 9000
+root, err = b.Build(&cfg.Network.Primary.MTU) // that leaf and the trees above it
+```
+
+**A pointer stands for everything beneath it**, so one rule covers a field, a
+subtree and the whole value:
+
+| argument | recomputed |
+|---|---|
+| `&cfg.Network.Primary.MTU` | that leaf, and the trees above it |
+| `&cfg.Network` | every leaf under `Network` |
+| `cfg` | everything — the wildcard |
+| *(none)* | everything |
+
+Pointers rather than path strings, so nothing can be mistyped or left behind by
+a rename. A pointer that addresses no field is an error rather than a no-op:
+ignoring one would publish a tree without the change it was meant to carry,
+which is the one way this can quietly go wrong.
+
+Measured on 97 MiB across ten thousand leaves: a full build 275 ms, a one-field
+build **7 ms**, a hundred-leaf subtree 12 ms. Encoding and hashing are gone
+entirely; what remains is the walk — a millisecond or so of reflection over ten
+thousand fields.
+
+That walk is not waste. Because every leaf is visited, a field that has come
+into existence since the last build has no hash on file and cannot be missed,
+declared or not. What *is* missed is a **value** change you did not declare:
+that is the bargain, and `b.Build()` with no arguments is always correct if you
+are unsure.
 
 A server, which supplies each client's objects through a `Provider`:
 
@@ -382,7 +424,7 @@ even though the whole struct is current.
 | `receive/` | Interprets an arriving packfile object by object; no storage of any kind |
 | `server/` | Listener, subscriber registry, per-ref data lifecycle, push on ref change |
 | `objects/` | In-memory store, `SelectSince` object arithmetic, pack encoding |
-| `structtree/` | Walks a Go struct with reflect onto a tree, and applies a tree back into one, whole or incrementally |
+| `structtree/` | Walks a Go struct with reflect onto a tree and back again, whole or incrementally in either direction |
 | `internal/wire/` | The protocol: pkt-line framed messages over a connection |
 | `internal/demo/` | The example configuration struct, used by `cmd/` and the tests |
 | `internal/e2e/` | Client and server together over a real TCP listener |
