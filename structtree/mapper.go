@@ -1,6 +1,9 @@
 package structtree
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+)
 
 // TagKey is the struct tag treevial reads, and TagLeaf the value that marks a
 // field as a leaf:
@@ -100,4 +103,30 @@ func (m Mapper) decode(data []byte, v reflect.Value) error {
 // it.
 func DefaultIsLeaf(field reflect.StructField) bool {
 	return IsTaggedLeaf(field) || isLeafType(field.Type)
+}
+
+// unusableMap reports an error if field is a map that cannot be addressed by
+// path and was not deliberately made a leaf.
+//
+// A map keyed by anything but a string has no path elements to offer, so it
+// cannot become a subtree. Saying so is better than storing it whole and
+// leaving someone to wonder why it has no paths under it — unless a tag or a
+// rule of your own asked for exactly that, which is how you say you want it in
+// one blob.
+func (m Mapper) unusableMap(field reflect.StructField) error {
+	t := field.Type
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Map || t.Key().Kind() == reflect.String {
+		return nil
+	}
+
+	if IsTaggedLeaf(field) || (m.IsLeaf != nil && m.IsLeaf(field)) {
+		return nil
+	}
+
+	return fmt.Errorf("%s cannot be addressed by path: its keys are %s, not strings; tag it `%s:\"%s\"` to store it whole",
+		t, t.Key(), TagKey, TagLeaf)
 }

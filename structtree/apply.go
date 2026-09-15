@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -115,6 +117,9 @@ type view interface {
 	leaf(name string) ([]byte, state, error)
 	// subtree returns the view for a named struct field.
 	subtree(name string) (view, state, error)
+	// children names what the view holds at this level. A struct's fields
+	// come from its type, but a map's keys can only come from the tree.
+	children() ([]string, error)
 }
 
 // apply writes the fields of v from vw. prefix is carried for error messages
@@ -136,6 +141,10 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 		target := v.Field(i)
 
 		if m.isLeaf(field) {
+			if err := m.unusableMap(field); err != nil {
+				return fmt.Errorf("structtree: %s: %w", path, err)
+			}
+
 			if err := m.applyLeaf(target, path, vw); err != nil {
 				return err
 			}
@@ -164,6 +173,14 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 				inner.Set(reflect.New(inner.Type().Elem()))
 			}
 			inner = inner.Elem()
+		}
+
+		if inner.Kind() == reflect.Map {
+			if err := m.applyMap(inner, path, sub); err != nil {
+				return err
+			}
+
+			continue
 		}
 
 		if err := m.apply(inner, path, sub); err != nil {
@@ -263,4 +280,139 @@ func subtrees(leaves map[string][]byte) map[string]bool {
 	}
 
 	return out
+}
+
+// applyMap fills a map from a subtree, one entry per child. The map is edited
+// in place rather than rebuilt, so an entry the view reports as unchanged keeps
+// whatever it already holds — which is what lets ApplySince skip work here too.
+// Keys the view no longer carries are deleted, since the tree is the source of
+// truth.
+func (m Mapper) applyMap(target reflect.Value, path string, vw view) error {
+	t := target.Type()
+
+	if t.Key().Kind() != reflect.String {
+		return fmt.Errorf("structtree: %s at %q cannot be addressed by path: its keys are %s, not strings",
+			t, path, t.Key())
+	}
+
+	names, err := vw.children()
+	if err != nil {
+		return fmt.Errorf("structtree: %s: %w", path, err)
+	}
+
+	if target.IsNil() {
+		target.Set(reflect.MakeMapWithSize(t, len(names)))
+	}
+
+	elem := reflect.StructField{Type: t.Elem()}
+	seen := make(map[string]bool, len(names))
+
+	for _, name := range names {
+		seen[name] = true
+
+		key := reflect.ValueOf(name).Convert(t.Key())
+		elem.Name = name
+
+		if m.isLeaf(elem) {
+			data, st, err := vw.leaf(name)
+			if err != nil {
+				return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
+			}
+
+			switch st {
+			case unchanged:
+				continue
+			case missing:
+				target.SetMapIndex(key, reflect.Value{})
+
+				continue
+			}
+
+			value := reflect.New(t.Elem()).Elem()
+			if err := m.decode(data, value); err != nil {
+				return fmt.Errorf("structtree: decode %s/%s: %w", path, name, err)
+			}
+
+			target.SetMapIndex(key, value)
+
+			continue
+		}
+
+		sub, st, err := vw.subtree(name)
+		if err != nil {
+			return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
+		}
+
+		switch st {
+		case unchanged:
+			continue
+		case missing:
+			target.SetMapIndex(key, reflect.Value{})
+
+			continue
+		}
+
+		// Start from what is there, so parts of an entry the view calls
+		// unchanged survive a change elsewhere in it.
+		value := reflect.New(t.Elem()).Elem()
+		if existing := target.MapIndex(key); existing.IsValid() {
+			value.Set(existing)
+		}
+
+		inner := value
+		if inner.Kind() == reflect.Map {
+			if err := m.applyMap(inner, path+"/"+name, sub); err != nil {
+				return err
+			}
+		} else if err := m.apply(inner, path+"/"+name, sub); err != nil {
+			return err
+		}
+
+		target.SetMapIndex(key, value)
+	}
+
+	for _, key := range target.MapKeys() {
+		if !seen[key.String()] {
+			target.SetMapIndex(key, reflect.Value{})
+		}
+	}
+
+	return nil
+}
+
+// children implements view.
+func (m mapView) children() ([]string, error) {
+	seen := map[string]bool{}
+
+	collect := func(path string) {
+		if m.prefix != "" {
+			if !strings.HasPrefix(path, m.prefix+"/") {
+				return
+			}
+			path = path[len(m.prefix)+1:]
+		}
+
+		if i := strings.IndexByte(path, '/'); i >= 0 {
+			path = path[:i]
+		}
+
+		if path != "" {
+			seen[path] = true
+		}
+	}
+
+	for path := range m.leaves {
+		collect(path)
+	}
+	for path := range m.subtrees {
+		collect(path)
+	}
+
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+
+	return out, nil
 }

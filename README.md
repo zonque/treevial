@@ -83,13 +83,36 @@ type Device struct {
 decision in the type itself, next to the fields, where a reader of the struct
 will look for it. Any other tag value is ignored.
 
-Failing a tag, a field is a leaf if it is **not a struct**, or if it is a struct
-implementing **`proto.Message`**. So an `int`, a `[]string` and a `map` are each
-stored whole in one blob; a generated protobuf message is one blob of its own
-wire bytes rather than a subtree of its internal fields; and a plain nested
-struct becomes a subtree. Unexported fields are skipped, and so are nil pointers
-— which makes a field going nil read as a deletion and a field appearing read as
-an addition.
+Failing a tag, a field is a leaf if it is **neither a struct nor a map**, or if
+it is a struct implementing **`proto.Message`**. So an `int` and a `[]string`
+are each stored whole in one blob; a generated protobuf message is one blob of
+its own wire bytes rather than a subtree of its internal fields; and a plain
+nested struct becomes a subtree. Unexported fields are skipped, and so are nil
+pointers — which makes a field going nil read as a deletion and a field
+appearing read as an addition.
+
+**A map becomes a subtree, one entry per key**, so changing one entry of a large
+map costs that entry rather than the whole of it:
+
+```go
+type Config struct {
+	Limits map[string]int                    // Limits/gain, Limits/delay
+	Ports  map[string]Interface              // Ports/eth0/MTU, …
+	Whole  map[string]int `treevial:"leaf"`  // one blob
+}
+```
+
+Keys must be strings, since they become path elements, and a key may be neither
+empty nor contain a slash — either would invent nesting the value does not have.
+A map keyed by anything else has nothing to offer a path and is reported as an
+error, unless it is tagged as a leaf, which is how you ask for it in one blob.
+Keys are walked in sorted order, so neither the tree nor `Walk` depends on Go's
+random map order. A nil or empty map contributes nothing, like a struct with
+nothing in it.
+
+One limitation worth knowing: Go has no address for a map element, so a
+`Builder` can only be told that a whole map changed (`b.Build(&cfg.Limits)`),
+which recomputes its entries.
 
 That fallback has one blind spot, and it is worth knowing before it bites: **a
 `time.Time` is a struct, is not a protobuf message, and has

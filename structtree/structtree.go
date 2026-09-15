@@ -23,10 +23,16 @@
 // force, and it keeps the decision in the type itself, next to the fields,
 // where a reader of the struct will look for it.
 //
-// Failing a tag, a field is a leaf if it is not a struct, or if it is a struct
-// implementing proto.Message. So a slice, a map and an int are each stored
-// whole in one blob, a generated protobuf message is one blob of its own wire
-// bytes, and a plain nested struct becomes a subtree.
+// Failing a tag, a field is a leaf if it is neither a struct nor a map, or if
+// it is a struct implementing proto.Message. So a slice and an int are each
+// stored whole in one blob, a generated protobuf message is one blob of its own
+// wire bytes, and a plain nested struct becomes a subtree.
+//
+// A map becomes a subtree too, one entry per key, so changing one entry of a
+// large map costs that entry rather than the whole of it. Its keys must be
+// strings, since they become path elements; a map keyed by anything else has
+// nothing to offer a path and is reported as an error unless it is tagged as a
+// leaf, which is how to ask for it in one blob.
 //
 // That fallback matters most for what it gets wrong. A time.Time is a struct,
 // is not a protobuf message, and has only unexported fields — so the walker
@@ -56,6 +62,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -100,16 +107,23 @@ func (m Mapper) Walk(v any) iter.Seq[Leaf] {
 			return
 		}
 
-		m.walk(root, "", yield)
+		var err error
+
+		m.walk(root, "", yield, &err)
 	}
 }
 
 // walk yields the leaves of v under prefix, reporting whether iteration should
-// carry on.
-func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool {
+// carry on. The first thing it cannot map is recorded in failure, which Build
+// reports and Walk ignores.
+func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, failure *error) bool {
 	v, ok := deref(v)
 	if !ok {
 		return true
+	}
+
+	if v.Kind() == reflect.Map {
+		return m.walkMap(v, prefix, yield, failure)
 	}
 
 	if v.Kind() != reflect.Struct {
@@ -132,6 +146,14 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool
 		value := v.Field(i)
 
 		if m.isLeaf(field) {
+			if err := m.unusableMap(field); err != nil {
+				if *failure == nil {
+					*failure = fmt.Errorf("structtree: %s: %w", path, err)
+				}
+
+				continue
+			}
+
 			inner, ok := deref(value)
 			if !ok {
 				continue
@@ -144,7 +166,7 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool
 			continue
 		}
 
-		if !m.walk(value, path, yield) {
+		if !m.walk(value, path, yield, failure) {
 			return false
 		}
 	}
@@ -152,8 +174,80 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool) bool
 	return true
 }
 
+// walkMap yields the leaves of a map, one subtree per key. Keys are sorted, so
+// a walk does not depend on Go's map order.
+//
+// A map value has no struct field of its own, so the leaf rule is asked about a
+// synthesised one carrying the key as its name and the map's element type. A
+// rule of your own therefore still decides for map values, though a tag cannot:
+// there is nowhere to write one.
+func (m Mapper) walkMap(v reflect.Value, prefix string, yield func(Leaf) bool, failure *error) bool {
+	if v.Type().Key().Kind() != reflect.String {
+		if *failure == nil {
+			*failure = fmt.Errorf("structtree: %s at %q cannot be addressed by path: its keys are %s, not strings",
+				v.Type(), prefix, v.Type().Key())
+		}
+
+		return true
+	}
+
+	keys := make([]string, 0, v.Len())
+	for _, key := range v.MapKeys() {
+		keys = append(keys, key.String())
+	}
+	sort.Strings(keys)
+
+	elem := reflect.StructField{Type: v.Type().Elem()}
+
+	for _, key := range keys {
+		if err := validKey(key); err != nil {
+			if *failure == nil {
+				*failure = fmt.Errorf("structtree: %s at %q: %w", v.Type(), prefix, err)
+			}
+
+			continue
+		}
+
+		value := v.MapIndex(reflect.ValueOf(key).Convert(v.Type().Key()))
+		path := prefix + "/" + key
+
+		elem.Name = key
+
+		if m.isLeaf(elem) {
+			inner, ok := deref(value)
+			if !ok {
+				continue
+			}
+
+			if !yield(Leaf{Path: path, Value: inner}) {
+				return false
+			}
+
+			continue
+		}
+
+		if !m.walk(value, path, yield, failure) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// validKey reports whether a map key can stand as one path element.
+func validKey(key string) error {
+	switch {
+	case key == "":
+		return fmt.Errorf("a key is empty")
+	case strings.Contains(key, "/"):
+		return fmt.Errorf("the key %q contains a slash", key)
+	}
+
+	return nil
+}
+
 // isLeafType is the default rule, expressed over a type: everything that is not
-// a struct, plus the structs that are protobuf messages.
+// a struct or a map, plus the structs that are protobuf messages.
 func isLeafType(t reflect.Type) bool {
 	if isProtoMessage(t) {
 		return true
@@ -163,7 +257,17 @@ func isLeafType(t reflect.Type) bool {
 		t = t.Elem()
 	}
 
-	return t.Kind() != reflect.Struct
+	switch t.Kind() {
+	case reflect.Struct:
+		return false
+	case reflect.Map:
+		// Only a map that can be addressed by path becomes a subtree.
+		// One that cannot stays a leaf, so that Build can refuse it by
+		// name rather than quietly leaving it out.
+		return t.Key().Kind() != reflect.String
+	default:
+		return true
+	}
 }
 
 // isProtoMessage reports whether t, or a pointer to it, is a protobuf message.
@@ -244,7 +348,13 @@ func (m Mapper) Build(store *objects.Store, v any) (plumbing.Hash, error) {
 
 	root := &node{children: map[string]*node{}}
 
-	for leaf := range m.Walk(v) {
+	var failure error
+
+	walked := func(yield func(Leaf) bool) {
+		m.walk(reflect.ValueOf(v), "", yield, &failure)
+	}
+
+	for leaf := range walked {
 		content, err := m.encode(leaf.Value)
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("structtree: encode %s: %w", leaf.Path, err)
@@ -256,6 +366,10 @@ func (m Mapper) Build(store *objects.Store, v any) (plumbing.Hash, error) {
 		}
 
 		root.insertPath(leaf.Path, hash)
+	}
+
+	if failure != nil {
+		return plumbing.ZeroHash, failure
 	}
 
 	return root.store(store)

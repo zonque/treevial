@@ -72,7 +72,7 @@ func TestWalkMirrorsFieldNamesAsSlashSeparatedPaths(t *testing.T) {
 		"Primary/MTU",
 		"Delay",
 		"Tags",
-		"Limits",
+		"Limits/gain",
 	}
 
 	if !slices.Equal(got, want) {
@@ -94,15 +94,16 @@ func TestWalkVisitsFieldsInDeclarationOrder(t *testing.T) {
 	}
 }
 
-func TestWalkTreatsEveryNonStructFieldAsALeaf(t *testing.T) {
+func TestWalkTreatsEveryNonStructNonMapFieldAsALeaf(t *testing.T) {
 	n := 7
 
+	// A map is the one non-struct that becomes a subtree; everything else
+	// here is stored whole.
 	type kinds struct {
 		Number    int
 		Text      string
 		Flag      bool
 		Slice     []string
-		Map       map[string]int
 		Pointer   *int
 		Interface any
 		Array     [2]int
@@ -110,7 +111,7 @@ func TestWalkTreatsEveryNonStructFieldAsALeaf(t *testing.T) {
 
 	got := paths(&kinds{Pointer: &n, Interface: "x"})
 
-	want := []string{"Number", "Text", "Flag", "Slice", "Map", "Pointer", "Interface", "Array"}
+	want := []string{"Number", "Text", "Flag", "Slice", "Pointer", "Interface", "Array"}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
