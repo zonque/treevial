@@ -256,22 +256,34 @@ func TestAnUndeclaredChangeIsNotPickedUp(t *testing.T) {
 	}
 }
 
-func TestAStructuralChangeIsPickedUpWithoutBeingDeclared(t *testing.T) {
+func TestAStructuralChangeElsewhereIsNotPickedUp(t *testing.T) {
 	cfg := sampleConfig()
 
 	b, _ := builderOn(t, objects.NewStore(), cfg)
 
-	// Backup was nil, so its paths are new: there is no cached hash to
-	// reuse for them, and they cannot be missed.
+	// Backup was nil, so setting it changes the shape of the value. A
+	// declaration naming something else does not look there, which is the
+	// bargain: declare what changed shape, or build the lot.
 	cfg.Backup = &netIface{Address: "10.0.0.2", MTU: 9000}
+	cfg.Primary.MTU = 9000
 
 	got, err := b.Build(&cfg.Primary.MTU)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
-	if want := rebuilt(t, cfg); got != want {
-		t.Errorf("got %s, want %s", got, want)
+	if got == rebuilt(t, cfg) {
+		t.Error("the new field reached the tree; the shortcut is not doing what it says")
+	}
+
+	// Declaring the value itself picks it up.
+	whole, err := b.Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if want := rebuilt(t, cfg); whole != want {
+		t.Errorf("got %s, want %s", whole, want)
 	}
 }
 

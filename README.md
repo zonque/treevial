@@ -233,30 +233,52 @@ root, err = b.Build(&cfg.Network.Primary.MTU) // that leaf and the trees above i
 ```
 
 **A pointer stands for everything beneath it**, so one rule covers a field, a
-subtree and the whole value:
+subtree, an entry of a map, and the whole value:
 
 | argument | recomputed |
 |---|---|
 | `&cfg.Network.Primary.MTU` | that leaf, and the trees above it |
 | `&cfg.Network` | every leaf under `Network` |
+| `cfg.Ports["eth0"]` | that entry of the map |
 | `cfg` | everything — the wildcard |
 | *(none)* | everything |
 
 Pointers rather than path strings, so nothing can be mistyped or left behind by
-a rename. A pointer that addresses no field is an error rather than a no-op:
-ignoring one would publish a tree without the change it was meant to carry,
-which is the one way this can quietly go wrong.
+a rename. A pointer is resolved against an index of addresses the last build
+recorded — one lookup, not a search — and then checked by descending the path it
+names, so a stale address is refused rather than blamed on whatever field lives
+there now. A pointer the last build never saw is an error, not a no-op:
+publishing a tree without the change it was meant to carry is the one way this
+could quietly go wrong.
 
-Measured on 97 MiB across ten thousand leaves: a full build 275 ms, a one-field
-build **7 ms**, a hundred-leaf subtree 12 ms. Encoding and hashing are gone
-entirely; what remains is the walk — a millisecond or so of reflection over ten
-thousand fields.
+Measured on a map of ten thousand entries, fifty thousand leaves in all: a full
+build 213 ms, a one-field build **5 ms**, one whole entry 5 ms. Nothing outside
+the declared path is encoded, hashed or even looked at; what remains is mostly
+the map's own tree object, which has ten thousand entries and has to be written
+again whenever any of them moves.
 
-That walk is not waste. Because every leaf is visited, a field that has come
-into existence since the last build has no hash on file and cannot be missed,
-declared or not. What *is* missed is a **value** change you did not declare:
-that is the bargain, and `b.Build()` with no arguments is always correct if you
-are unsure.
+### What it will not notice
+
+Only what you declare, and what lies beneath it, is looked at. So a value
+changed elsewhere keeps the hash it had — and so does a **member added or
+removed** elsewhere, since adding a key to a map changes that map's shape and a
+declaration naming something else cannot know about it.
+
+Declare the thing whose shape changed — the map, the struct — and its whole
+subtree is walked afresh, which picks up members coming and going inside it:
+
+```go
+cfg.Ports["eth2"] = &Interface{}
+root, err = b.Build(&cfg.Ports)      // the new key is in the tree
+```
+
+Or call `b.Build()` with no arguments, which walks everything and is always
+right. There are tests for each of those, including one that pins the miss so it
+stays a documented bargain rather than a surprise.
+
+A map of values hands out copies, so its entries have no address to take — Go
+will not let a field inside one be assigned to either. Keep pointers in a map
+whose entries you mean to change one at a time.
 
 A server, which supplies each client's objects through a `Provider`:
 

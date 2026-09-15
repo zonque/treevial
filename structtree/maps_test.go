@@ -230,3 +230,157 @@ func TestABuilderDeclaresAWholeMap(t *testing.T) {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
+
+// deepMaps keeps its entries behind pointers, which is what lets a caller both
+// mutate a field inside an entry and hand its address to a Builder.
+type deepMaps struct {
+	Ports map[string]*device
+	Zones map[string]device
+}
+
+func sampleDeepMaps() *deepMaps {
+	return &deepMaps{
+		Ports: map[string]*device{
+			"eth0": {Name: "front", Location: location{Room: "hall-a", Row: 1}},
+			"eth1": {Name: "rear", Location: location{Room: "hall-b", Row: 2}},
+		},
+		Zones: map[string]device{
+			"north": {Name: "north", Location: location{Room: "hall-c", Row: 3}},
+		},
+	}
+}
+
+func countingMapper(n *int) structtree.Mapper {
+	return structtree.Mapper{
+		Encode: func(v reflect.Value) ([]byte, error) {
+			*n++
+
+			return structtree.DefaultEncoder(v)
+		},
+	}
+}
+
+func TestABuilderDeclaresAFieldInsideAMapEntry(t *testing.T) {
+	v := sampleDeepMaps()
+
+	encoded := 0
+
+	b, err := countingMapper(&encoded).NewBuilder(objects.NewStore(), v)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	encoded = 0
+	v.Ports["eth0"].Location.Row = 9
+
+	got, err := b.Build(&v.Ports["eth0"].Location.Row)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if encoded != 1 {
+		t.Errorf("encoded %d leaves, want 1", encoded)
+	}
+	if want := rebuilt(t, v); got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestABuilderDeclaresAWholeMapEntry(t *testing.T) {
+	v := sampleDeepMaps()
+
+	encoded := 0
+
+	b, err := countingMapper(&encoded).NewBuilder(objects.NewStore(), v)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	encoded = 0
+	v.Ports["eth0"].Name = "moved"
+	v.Ports["eth0"].Location.Room = "hall-z"
+
+	// The entry pointer stands for everything in that entry.
+	got, err := b.Build(v.Ports["eth0"])
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Name, Location/Room and Location/Row — and nothing from eth1.
+	if encoded != 3 {
+		t.Errorf("encoded %d leaves, want the 3 in eth0", encoded)
+	}
+	if want := rebuilt(t, v); got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestDeclaringOneEntryLeavesItsSiblingsAlone(t *testing.T) {
+	v := sampleDeepMaps()
+	store := objects.NewStore()
+
+	b, err := structtree.NewBuilder(store, v)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	before, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	v.Ports["eth0"].Location.Row = 9
+
+	after, err := b.Build(&v.Ports["eth0"].Location.Row)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	fresh, err := store.SelectSince(before, after)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	// The rewritten blob and the trees above it: eth0/Location, eth0,
+	// Ports and the root. Nothing of eth1 or Zones.
+	if want := 5; len(fresh) != want {
+		t.Errorf("got %d new objects, want %d", len(fresh), want)
+	}
+}
+
+func TestAValueTypedMapCanOnlyBeDeclaredWhole(t *testing.T) {
+	v := sampleDeepMaps()
+
+	encoded := 0
+
+	b, err := countingMapper(&encoded).NewBuilder(objects.NewStore(), v)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Its entries have no address — Go will not even let one be mutated in
+	// place — so the map itself is the finest thing there is to declare.
+	encoded = 0
+	v.Zones["north"] = device{Name: "north", Location: location{Room: "hall-z", Row: 4}}
+
+	got, err := b.Build(&v.Zones)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if encoded != 3 {
+		t.Errorf("encoded %d leaves, want the 3 in Zones", encoded)
+	}
+	if want := rebuilt(t, v); got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
