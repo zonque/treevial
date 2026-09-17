@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// Package testpb exists for one reason: to give the tests a generated message
+// with a oneof in it, and no MarshalJSON of its own.
+//
+// That combination is what exposes a message being stored as JSON rather than
+// as a message. encoding/json writes the wrapper the generated code uses for a
+// oneof and then has nothing to unmarshal it back into. The well-known types
+// are no substitute: structpb carries its own MarshalJSON and so survives the
+// mistake, and durationpb has no oneof to expose it.
+//
+// Regenerating needs protoc and protoc-gen-go; nothing else in the build does.
+//
+//     protoc --proto_path=internal/testpb --go_out=. \
+//         --go_opt=module=github.com/zonque/treevial internal/testpb/testpb.proto
+package testpb;
+
+option go_package = "github.com/zonque/treevial/internal/testpb";
+
+// Setting is a message whose value is a oneof.
+message Setting {
+  string name = 1;
+
+  oneof value {
+    string text = 2;
+    int64 number = 3;
+    bool flag = 4;
+  }
+}

@@ -1,6 +1,7 @@
 package structtree_test
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -262,5 +263,46 @@ func TestAnInterfaceFieldHoldingAnythingElseStillWorks(t *testing.T) {
 
 	if got.Payload != "plain" {
 		t.Errorf("got %#v, want %q", got.Payload, "plain")
+	}
+}
+
+func TestAMessageInsideSomethingStoredWholeIsRefused(t *testing.T) {
+	type holder struct {
+		Delay *durationpb.Duration
+	}
+
+	type config struct {
+		// Tagged, so it would be one JSON blob — and JSON writes a
+		// message as the struct it is, oneof wrapper included, with
+		// nothing to read that back into.
+		Whole holder `treevial:"leaf"`
+	}
+
+	_, err := structtree.Build(objects.NewStore(), &config{Whole: holder{Delay: durationpb.New(1)}})
+	if err == nil {
+		t.Fatal("Build accepted a tagged struct holding a protobuf message")
+	}
+	if !contains(err.Error(), "protobuf message") {
+		t.Errorf("error %q does not say what is wrong", err)
+	}
+}
+
+func TestAnEncodingOfYourOwnIsTrustedWithMessages(t *testing.T) {
+	type holder struct {
+		Delay *durationpb.Duration
+	}
+
+	type config struct {
+		Whole holder `treevial:"leaf"`
+	}
+
+	// Supplying a codec says you have thought about it.
+	m := structtree.Mapper{
+		Encode: func(v reflect.Value) ([]byte, error) { return []byte("mine"), nil },
+		Decode: func(data []byte, v reflect.Value) error { return nil },
+	}
+
+	if _, err := m.Build(objects.NewStore(), &config{Whole: holder{Delay: durationpb.New(1)}}); err != nil {
+		t.Errorf("Build refused a value the Mapper's own encoding handles: %v", err)
 	}
 }

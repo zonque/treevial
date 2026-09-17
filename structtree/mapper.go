@@ -149,3 +149,60 @@ func unreadableLeaf(field reflect.StructField, value reflect.Value) error {
 	return fmt.Errorf("%s holds %s, which cannot be read back: an interface does not say which message to expect, so declare the field as %s",
 		field.Type, value.Type(), reflect.PointerTo(value.Type()))
 }
+
+// unreadableBlob reports an error if a leaf would be stored whole by the
+// default encoding while holding a protobuf message somewhere inside it.
+//
+// JSON writes such a message as the generated struct it is, oneof wrapper and
+// all, and then has nothing to unmarshal that wrapper into. A message of its
+// own goes as proto and is fine; a message inside something stored whole is
+// not, and saying so is better than writing a blob nobody can read.
+//
+// An encoding of your own is presumed to know its business, so this only
+// applies to the default one.
+func (m Mapper) unreadableBlob(field reflect.StructField, t reflect.Type) error {
+	if m.Encode != nil || isProtoMessage(t) {
+		return nil
+	}
+
+	if !containsMessage(t, map[reflect.Type]bool{}) {
+		return nil
+	}
+
+	return fmt.Errorf("%s holds a protobuf message, which cannot be stored whole by the default encoding: leave it untagged so each message gets a blob of its own, or give the Mapper an Encode and Decode that handle it",
+		field.Type)
+}
+
+// containsMessage reports whether t holds a protobuf message anywhere inside.
+// An interface is not followed, since what it holds is not known from the type.
+func containsMessage(t reflect.Type, seen map[reflect.Type]bool) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+
+	if isProtoMessage(t) {
+		return true
+	}
+
+	switch t.Kind() {
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if containsMessage(t.Field(i).Type, seen) {
+				return true
+			}
+		}
+
+	case reflect.Map:
+		return containsMessage(t.Key(), seen) || containsMessage(t.Elem(), seen)
+
+	case reflect.Slice, reflect.Array:
+		return containsMessage(t.Elem(), seen)
+	}
+
+	return false
+}

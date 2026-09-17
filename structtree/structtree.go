@@ -192,6 +192,14 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 				continue
 			}
 
+			if err := m.unreadableBlob(field, inner.Type()); err != nil {
+				if *failure == nil {
+					*failure = fmt.Errorf("structtree: %s: %w", path, err)
+				}
+
+				continue
+			}
+
 			if !yield(Leaf{Path: path, Value: inner}) {
 				return false
 			}
