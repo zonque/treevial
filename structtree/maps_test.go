@@ -477,3 +477,19 @@ func publish(t *testing.T, store *objects.Store, graph *receive.Graph, v any) pl
 
 	return root
 }
+
+func TestApplyReportsANonStructRatherThanPanicking(t *testing.T) {
+	// apply reaches NumField, so a caller that hands it anything else used
+	// to take the process down. Whatever goes wrong here, it should arrive
+	// as an error.
+	for _, dst := range []any{
+		&map[string]int{},
+		&[]string{},
+		new(int),
+	} {
+		err := structtree.Apply(dst, map[string][]byte{"A": []byte("1")})
+		if err == nil {
+			t.Errorf("Apply(%T) returned no error", dst)
+		}
+	}
+}

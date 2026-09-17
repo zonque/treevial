@@ -126,6 +126,13 @@ type view interface {
 // apply writes the fields of v from vw. prefix is carried for error messages
 // only; each view resolves names itself.
 func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
+	// Reaching NumField with anything but a struct takes the process down,
+	// which is how a missing dereference in one caller announced itself
+	// once already. Say it instead.
+	if v.Kind() != reflect.Struct {
+		return fmt.Errorf("structtree: %s at %q is not a struct", v.Type(), prefix)
+	}
+
 	t := v.Type()
 
 	for i := range t.NumField() {
