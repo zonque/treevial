@@ -130,3 +130,22 @@ func (m Mapper) unusableMap(field reflect.StructField) error {
 	return fmt.Errorf("%s cannot be addressed by path: its keys are %s, not strings; tag it `%s:\"%s\"` to store it whole",
 		t, t.Key(), TagKey, TagLeaf)
 }
+
+// unreadableLeaf reports an error if a leaf could be written but not read back.
+//
+// An interface says nothing about what it holds, so a protobuf message in one
+// is encoded as a message and then met, on the way back, by a field that gives
+// the decoder no message to unmarshal into. Anything else in an interface goes
+// as JSON both ways and is fine.
+func unreadableLeaf(field reflect.StructField, value reflect.Value) error {
+	if field.Type.Kind() != reflect.Interface {
+		return nil
+	}
+
+	if !isProtoMessage(value.Type()) {
+		return nil
+	}
+
+	return fmt.Errorf("%s holds %s, which cannot be read back: an interface does not say which message to expect, so declare the field as %s",
+		field.Type, value.Type(), reflect.PointerTo(value.Type()))
+}

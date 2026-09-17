@@ -83,24 +83,44 @@ type Device struct {
 decision in the type itself, next to the fields, where a reader of the struct
 will look for it. Any other tag value is ignored.
 
-Failing a tag, a field is a leaf if it is **neither a struct nor a map**, or if
-it is a struct implementing **`proto.Message`**. So an `int` and a `[]string`
-are each stored whole in one blob; a generated protobuf message is one blob of
-its own wire bytes rather than a subtree of its internal fields; and a plain
-nested struct becomes a subtree. Unexported fields are skipped, and so are nil
-pointers — which makes a field going nil read as a deletion and a field
-appearing read as an addition.
+Failing a tag, a field is a leaf if it has **no structure to descend into** — an
+`int`, a `string`, a `[]byte`, a `[]string` — or if it is a **`proto.Message`**,
+which is stored as one blob of its own wire bytes rather than a subtree of its
+internal fields. Unexported fields are skipped, and so are nil pointers — which
+makes a field going nil read as a deletion and a field appearing read as an
+addition.
 
-**A map becomes a subtree, one entry per key**, so changing one entry of a large
-map costs that entry rather than the whole of it:
+**Everything with structure becomes a subtree:**
 
 ```go
 type Config struct {
-	Limits map[string]int                    // Limits/gain, Limits/delay
-	Ports  map[string]Interface              // Ports/eth0/MTU, …
-	Whole  map[string]int `treevial:"leaf"`  // one blob
+	Device  Device                            // Device/Name, …
+	Limits  map[string]int                    // Limits/gain, Limits/delay
+	Ports   map[string]*Interface             // Ports/eth0/MTU, …
+	Delays  []*durationpb.Duration            // Delays/0, Delays/1, …
+	Tags    []string                          // one blob: scalars
+	Raw     []byte                            // one blob
+	Whole   map[string]int `treevial:"leaf"`  // one blob: you said so
 }
 ```
+
+A map's keys must be strings, since they become path elements, and a key may be
+neither empty nor contain a slash — either would invent nesting the value does
+not have. A map keyed by anything else is reported as an error unless tagged as
+a leaf. Keys are walked in sorted order, so neither the tree nor `Walk` depends
+on Go's random map order. A slice's children are named by index, and decoding
+reads them as numbers rather than as text, so order survives past ten elements.
+A nil or empty map, or a slice that would have been a subtree, contributes
+nothing — like a struct with nothing in it. A nil or empty slice of *scalars* is
+a leaf like any other, since `nil` and `[]` are worth telling apart.
+
+**Why slices of messages nest, and not just for granularity.** A leaf that is
+not itself a message but merely contains some is encoded as JSON, and JSON
+cannot put a protobuf `oneof` back together — it writes the wrapper the
+generated code uses and then has nothing to unmarshal it into. Giving each
+message a blob of its own gets it the wire encoding it deserves. For the same
+reason an interface counts as scalar and a message inside one is refused, since
+nothing on the far side would say which message to expect.
 
 Keys must be strings, since they become path elements, and a key may be neither
 empty nor contain a slash — either would invent nesting the value does not have.

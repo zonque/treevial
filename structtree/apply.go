@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -167,23 +168,7 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 			continue
 		}
 
-		inner := target
-		if inner.Kind() == reflect.Pointer {
-			if inner.IsNil() {
-				inner.Set(reflect.New(inner.Type().Elem()))
-			}
-			inner = inner.Elem()
-		}
-
-		if inner.Kind() == reflect.Map {
-			if err := m.applyMap(inner, path, sub); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		if err := m.apply(inner, path, sub); err != nil {
+		if err := m.applyInto(target, path, sub); err != nil {
 			return err
 		}
 	}
@@ -359,12 +344,7 @@ func (m Mapper) applyMap(target reflect.Value, path string, vw view) error {
 			value.Set(existing)
 		}
 
-		inner := value
-		if inner.Kind() == reflect.Map {
-			if err := m.applyMap(inner, path+"/"+name, sub); err != nil {
-				return err
-			}
-		} else if err := m.apply(inner, path+"/"+name, sub); err != nil {
+		if err := m.applyInto(value, path+"/"+name, sub); err != nil {
 			return err
 		}
 
@@ -415,4 +395,138 @@ func (m mapView) children() ([]string, error) {
 	sort.Strings(out)
 
 	return out, nil
+}
+
+// applyInto fills v from vw, whatever shape v is, allocating through pointers
+// on the way. v must be settable.
+//
+// Having this in one place is the point: a map of pointers used to reach the
+// struct case with the pointer still in hand, and panic on it.
+func (m Mapper) applyInto(v reflect.Value, path string, vw view) error {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+
+		v = v.Elem()
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		return m.apply(v, path, vw)
+	case reflect.Map:
+		return m.applyMap(v, path, vw)
+	case reflect.Slice, reflect.Array:
+		return m.applySlice(v, path, vw)
+	default:
+		return fmt.Errorf("structtree: %s at %q has no fields to fill", v.Type(), path)
+	}
+}
+
+// applySlice fills a slice or array from a subtree, one element per child.
+//
+// Children are named by index, and tree entries sort as text, so the indices
+// are read as numbers: otherwise ten elements in and the order would come back
+// scrambled. They must run from zero without a gap, since a slice has no way to
+// hold one.
+func (m Mapper) applySlice(target reflect.Value, path string, vw view) error {
+	names, err := vw.children()
+	if err != nil {
+		return fmt.Errorf("structtree: %s: %w", path, err)
+	}
+
+	indices := make([]int, 0, len(names))
+
+	for _, name := range names {
+		i, err := strconv.Atoi(name)
+		if err != nil || i < 0 {
+			return fmt.Errorf("structtree: %s/%s is not an index", path, name)
+		}
+
+		indices = append(indices, i)
+	}
+
+	sort.Ints(indices)
+
+	for i, index := range indices {
+		if index != i {
+			return fmt.Errorf("structtree: %s has no element %d", path, i)
+		}
+	}
+
+	n := len(indices)
+
+	switch target.Kind() {
+	case reflect.Slice:
+		if target.Len() != n {
+			// Copy what is there, so elements the view calls
+			// unchanged keep what they hold.
+			fresh := reflect.MakeSlice(target.Type(), n, n)
+			reflect.Copy(fresh, target)
+			target.Set(fresh)
+		}
+	default:
+		if n > target.Len() {
+			return fmt.Errorf("structtree: %s has %d elements, more than %s holds",
+				path, n, target.Type())
+		}
+	}
+
+	elem := reflect.StructField{Type: target.Type().Elem()}
+
+	for i := range n {
+		name := strconv.Itoa(i)
+		elem.Name = name
+
+		item := target.Index(i)
+
+		if m.isLeaf(elem) {
+			data, st, err := vw.leaf(name)
+			if err != nil {
+				return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
+			}
+
+			switch st {
+			case unchanged:
+				continue
+			case missing:
+				item.SetZero()
+
+				continue
+			}
+
+			item.SetZero()
+
+			if err := m.decode(data, item); err != nil {
+				return fmt.Errorf("structtree: decode %s/%s: %w", path, name, err)
+			}
+
+			continue
+		}
+
+		sub, st, err := vw.subtree(name)
+		if err != nil {
+			return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
+		}
+
+		switch st {
+		case unchanged:
+			continue
+		case missing:
+			item.SetZero()
+
+			continue
+		}
+
+		if err := m.applyInto(item, path+"/"+name, sub); err != nil {
+			return err
+		}
+	}
+
+	// An array keeps its length, so anything past the end is cleared.
+	for i := n; i < target.Len(); i++ {
+		target.Index(i).SetZero()
+	}
+
+	return nil
 }

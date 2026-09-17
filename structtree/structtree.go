@@ -23,16 +23,30 @@
 // force, and it keeps the decision in the type itself, next to the fields,
 // where a reader of the struct will look for it.
 //
-// Failing a tag, a field is a leaf if it is neither a struct nor a map, or if
-// it is a struct implementing proto.Message. So a slice and an int are each
-// stored whole in one blob, a generated protobuf message is one blob of its own
-// wire bytes, and a plain nested struct becomes a subtree.
+// Failing a tag, a field is a leaf if it has no structure to descend into: an
+// int, a string, a []byte, a []string. A generated protobuf message is a leaf
+// too, stored as one blob of its own wire bytes.
 //
-// A map becomes a subtree too, one entry per key, so changing one entry of a
-// large map costs that entry rather than the whole of it. Its keys must be
-// strings, since they become path elements; a map keyed by anything else has
-// nothing to offer a path and is reported as an error unless it is tagged as a
-// leaf, which is how to ask for it in one blob.
+// Everything with structure becomes a subtree:
+//
+//   - a nested struct, one child per field;
+//   - a map, one child per key, so changing one entry of a large map costs that
+//     entry rather than the whole of it. Keys must be strings, since they
+//     become path elements; a map keyed by anything else is reported as an
+//     error unless it is tagged as a leaf;
+//   - a slice or array whose elements have structure of their own, one child
+//     per element, named by index. A run of scalars stays one blob, since
+//     splitting a []byte into a blob apiece would serve nobody.
+//
+// The slice rule is not only about granularity. A leaf that is not itself a
+// message but merely contains some is encoded as JSON, and JSON cannot put a
+// protobuf oneof back together: it writes the wrapper the generated code uses
+// and then has nothing to unmarshal it into. Making such a slice a subtree
+// gives each message a blob of its own and the wire encoding it deserves.
+//
+// An interface is treated as scalar, since what it holds is not known from the
+// type. A protobuf message in one is refused rather than written, because
+// nothing on the far side would say which message to unmarshal.
 //
 // That fallback matters most for what it gets wrong. A time.Time is a struct,
 // is not a protobuf message, and has only unexported fields — so the walker
@@ -69,6 +83,7 @@ import (
 	"iter"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -132,6 +147,10 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 		return m.walkMap(v, prefix, yield, failure)
 	}
 
+	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
+		return m.walkSlice(v, prefix, yield, failure)
+	}
+
 	if v.Kind() != reflect.Struct {
 		return yield(Leaf{Path: prefix, Value: v})
 	}
@@ -162,6 +181,14 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 
 			inner, ok := deref(value)
 			if !ok {
+				continue
+			}
+
+			if err := unreadableLeaf(field, inner); err != nil {
+				if *failure == nil {
+					*failure = fmt.Errorf("structtree: %s: %w", path, err)
+				}
+
 				continue
 			}
 
@@ -244,6 +271,47 @@ func (m Mapper) walkMap(v reflect.Value, prefix string, yield func(Leaf) bool, f
 	return true
 }
 
+// walkSlice yields the leaves of a slice or array, one subtree per element,
+// named by its index.
+//
+// An element has no struct field of its own, so the leaf rule is asked about a
+// synthesised one carrying the index as its name and the element type, the same
+// way a map's values are handled.
+func (m Mapper) walkSlice(v reflect.Value, prefix string, yield func(Leaf) bool, failure *error) bool {
+	elem := reflect.StructField{Type: v.Type().Elem()}
+
+	for i := range v.Len() {
+		name := strconv.Itoa(i)
+
+		path := name
+		if prefix != "" {
+			path = prefix + "/" + name
+		}
+
+		value := v.Index(i)
+		elem.Name = name
+
+		if m.isLeaf(elem) {
+			inner, ok := deref(value)
+			if !ok {
+				continue
+			}
+
+			if !yield(Leaf{Path: path, Value: inner}) {
+				return false
+			}
+
+			continue
+		}
+
+		if !m.walk(value, path, yield, failure) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // validKey reports whether a map key can stand as one path element.
 func validKey(key string) error {
 	switch {
@@ -275,6 +343,31 @@ func isLeafType(t reflect.Type) bool {
 		// One that cannot stays a leaf, so that Build can refuse it by
 		// name rather than quietly leaving it out.
 		return t.Key().Kind() != reflect.String
+	case reflect.Slice, reflect.Array:
+		// A run of scalars is one blob: splitting a []byte or a
+		// []string into a blob apiece would serve nobody. A run of
+		// anything with structure becomes a subtree, so that one
+		// element of it can change on its own — and so that a protobuf
+		// message in one is encoded as a message rather than as
+		// whatever JSON makes of its fields, which cannot put a oneof
+		// back together.
+		return isScalar(t.Elem())
+	default:
+		return true
+	}
+}
+
+// isScalar reports whether t is a value with no structure to descend into.
+// An interface counts as one: what it holds is not known from the type, so
+// there would be no way to read back what was written.
+func isScalar(t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+		return false
 	default:
 		return true
 	}

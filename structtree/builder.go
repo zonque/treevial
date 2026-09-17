@@ -3,6 +3,7 @@ package structtree
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -520,6 +521,13 @@ func (b *Builder) descend(path string) (reflect.Value, bool) {
 			}
 			v = entry
 
+		case reflect.Slice, reflect.Array:
+			i, err := strconv.Atoi(name)
+			if err != nil || i < 0 || i >= v.Len() {
+				return reflect.Value{}, false
+			}
+			v = v.Index(i)
+
 		default:
 			return reflect.Value{}, false
 		}
@@ -587,6 +595,30 @@ func (b *Builder) indexValue(v reflect.Value, path string) {
 			b.fields[childPath] = elem
 
 			value := v.MapIndex(key)
+
+			if b.mapper.isLeaf(elem) {
+				b.record(value, childPath, elem)
+
+				continue
+			}
+
+			b.indexValue(value, childPath)
+		}
+
+	case reflect.Slice, reflect.Array:
+		elem := reflect.StructField{Type: v.Type().Elem()}
+
+		for i := range v.Len() {
+			name := strconv.Itoa(i)
+
+			childPath := path + "/" + name
+			elem.Name = name
+
+			b.fields[childPath] = elem
+
+			// Unlike a map entry, a slice element has an address of
+			// its own, so it can be declared directly.
+			value := v.Index(i)
 
 			if b.mapper.isLeaf(elem) {
 				b.record(value, childPath, elem)

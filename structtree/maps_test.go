@@ -1,11 +1,15 @@
 package structtree_test
 
 import (
+	"bytes"
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/go-git/go-git/v5/plumbing"
+
 	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/receive"
 	"github.com/zonque/treevial/structtree"
 )
 
@@ -383,4 +387,93 @@ func TestAValueTypedMapCanOnlyBeDeclaredWhole(t *testing.T) {
 	if want := rebuilt(t, v); got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}
+}
+
+// A map of pointers is the shape the Builder made first-class, and Apply never
+// had a test for it.
+func TestApplyFillsAMapOfPointers(t *testing.T) {
+	want := sampleDeepMaps()
+
+	_, leaves := storedLeaves(t, want)
+
+	var got deepMaps
+	if err := structtree.Apply(&got, leaves); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if got.Ports["eth0"] == nil {
+		t.Fatal("Ports/eth0 was left nil")
+	}
+	if got.Ports["eth0"].Location.Room != "hall-a" {
+		t.Errorf("Ports/eth0: got %+v", got.Ports["eth0"])
+	}
+	if got.Zones["north"].Name != "north" {
+		t.Errorf("Zones/north: got %+v", got.Zones["north"])
+	}
+
+	if rebuilt(t, &got) != rebuilt(t, want) {
+		t.Error("the round trip changed the value")
+	}
+}
+
+func TestApplySinceFillsAMapOfPointers(t *testing.T) {
+	first := sampleDeepMaps()
+
+	store := objects.NewStore()
+	graph := receive.NewGraph()
+
+	before := publish(t, store, graph, first)
+
+	second := sampleDeepMaps()
+	second.Ports["eth0"].Location.Row = 9
+
+	after := publish(t, store, graph, second)
+
+	var got deepMaps
+	if err := structtree.ApplySince(&got, graph, plumbing.ZeroHash, before); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+	if err := structtree.ApplySince(&got, graph, before, after); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	if got.Ports["eth0"] == nil {
+		t.Fatal("Ports/eth0 was left nil")
+	}
+	if got.Ports["eth0"].Location.Row != 9 {
+		t.Errorf("Ports/eth0/Location/Row: got %d, want 9", got.Ports["eth0"].Location.Row)
+	}
+	if rebuilt(t, &got) != rebuilt(t, second) {
+		t.Error("the incremental decode does not match the value published")
+	}
+}
+
+// publish stores v and feeds the objects a client would receive into graph.
+func publish(t *testing.T, store *objects.Store, graph *receive.Graph, v any) plumbing.Hash {
+	t.Helper()
+
+	root, err := structtree.Build(store, v)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	hashes, err := store.SelectSince(plumbing.ZeroHash, root)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	if len(hashes) == 0 {
+		return root
+	}
+
+	var buf bytes.Buffer
+	if _, err := store.EncodePack(&buf, hashes); err != nil {
+		t.Fatalf("EncodePack: %v", err)
+	}
+
+	if err := receive.Interpret(&buf, graph); err != nil {
+		t.Fatalf("Interpret: %v", err)
+	}
+
+	return root
 }
