@@ -66,7 +66,7 @@ func mutateSyncedRefs(srv *server.Server, provider *demoProvider, after time.Dur
 
 			done[sub.Ref] = true
 
-			go mutateOnce(srv, provider, sub.Ref, sub.Head, after)
+			go mutateOnce(srv, provider, sub, after)
 		}
 	}
 }
@@ -74,11 +74,13 @@ func mutateSyncedRefs(srv *server.Server, provider *demoProvider, after time.Dur
 func mutateOnce(
 	srv *server.Server,
 	provider *demoProvider,
-	ref string,
-	head plumbing.Hash,
+	sub server.Subscription,
 	after time.Duration,
 ) {
-	log.Printf("[%s] synced at %s; setting Network.Primary.MTU in %s", ref, head, after)
+	ref := sub.Ref
+
+	log.Printf("[%s] synced at %s after %d bytes; setting Network.Primary.MTU in %s",
+		ref, sub.Head, sub.Sent, after)
 	time.Sleep(after)
 
 	next, err := provider.Retune(ref)
@@ -92,6 +94,33 @@ func mutateOnce(
 
 	if err := srv.SetHead(ref, next); err != nil {
 		log.Printf("[%s] set head: %v", ref, err)
+
+		return
+	}
+
+	reportCost(srv, ref, next, sub.Sent)
+}
+
+// reportCost waits for the subscriber to acknowledge the new head and then
+// says what that push cost, measured against what had already gone out. The
+// counts come from the connection itself, so they include the pkt-line framing
+// and are what the link carried rather than an estimate from the object count.
+func reportCost(srv *server.Server, ref string, head plumbing.Hash, before int64) {
+	deadline := time.Now().Add(10 * time.Second)
+
+	for time.Now().Before(deadline) {
+		for _, sub := range srv.Subscribers() {
+			if sub.Ref != ref || sub.Synced != head {
+				continue
+			}
+
+			log.Printf("[%s] synced at %s; that push cost %d bytes, %d sent in total",
+				ref, head, sub.Sent-before, sub.Sent)
+
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

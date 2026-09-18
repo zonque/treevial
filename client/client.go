@@ -36,7 +36,8 @@ const keepalivePeriod = 30 * time.Second
 
 // Update reports one completed push: the ref that moved, the object it now
 // points at, what it pointed at before, how many objects the server had to
-// send, and the accumulated graph the client has interpreted so far.
+// send, what the push cost on the wire, and the accumulated graph the client
+// has interpreted so far.
 type Update struct {
 	// Ref the update arrived for: the head this client asked for.
 	Ref  string
@@ -47,7 +48,14 @@ type Update struct {
 	// pair to decode only what moved.
 	Previous    plumbing.Hash
 	ObjectCount int
-	Graph       *receive.Graph
+	// Bytes is what this push cost on the wire: the update message, the
+	// pack that followed it, and the pkt-line framing around both. It is
+	// measured, not estimated from the object count.
+	Bytes int64
+	// TotalBytes is everything this connection has received since it was
+	// opened, this push included.
+	TotalBytes int64
+	Graph      *receive.Graph
 }
 
 // Client is a connection to a treevial server. One connection carries one
@@ -78,6 +86,20 @@ func Dial(ctx context.Context, addr string) (*Client, error) {
 // Close hangs up.
 func (c *Client) Close() error {
 	return c.conn.Close()
+}
+
+// Received reports how many bytes have arrived on this connection since it was
+// dialled, pkt-line framing included. Together with [Client.Sent] it is what
+// the subscription has cost in traffic.
+func (c *Client) Received() int64 {
+	return c.conn.BytesRead()
+}
+
+// Sent reports how many bytes this client has put on the wire: one
+// registration and one acknowledgement per push, which is everything a client
+// ever says.
+func (c *Client) Sent() int64 {
+	return c.conn.BytesWritten()
 }
 
 // Err returns the error that ended the subscription, if any.
@@ -165,6 +187,11 @@ func (c *Client) consume(
 	previous := synced
 
 	for {
+		// Counted from before the update message is read to after its
+		// pack has been drained, so the figure is the bytes that
+		// actually crossed the socket for this push.
+		start := c.conn.BytesRead()
+
 		msg, err := c.conn.ReadServerMessage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -192,6 +219,8 @@ func (c *Client) consume(
 			return err
 		}
 
+		received := c.conn.BytesRead()
+
 		if err := c.conn.WriteAck(msg.Hash); err != nil {
 			return err
 		}
@@ -202,6 +231,8 @@ func (c *Client) consume(
 			Hash:        msg.Hash,
 			Previous:    previous,
 			ObjectCount: msg.ObjectCount,
+			Bytes:       received - start,
+			TotalBytes:  received,
 			Graph:       graph,
 		}:
 		case <-ctx.Done():

@@ -17,6 +17,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
@@ -24,9 +25,9 @@ import (
 	"github.com/zonque/treevial"
 )
 
-// chunkSize is how much pack data is buffered into one pkt-line. It is well
+// ChunkSize is how much pack data is buffered into one pkt-line. It is well
 // under pktline.MaxPayloadSize, which a line may not exceed.
-const chunkSize = 32 * 1024
+const ChunkSize = 32 * 1024
 
 // ClientMessageType tells the two messages a client sends apart.
 type ClientMessageType int
@@ -75,15 +76,66 @@ type Conn struct {
 	rw   io.ReadWriteCloser
 	enc  *pktline.Encoder
 	scan *pktline.Scanner
+
+	// What has crossed this connection so far. Counted here because this
+	// is the only place that sees the bytes themselves, and atomic because
+	// one goroutine may be reading while another writes.
+	read    atomic.Int64
+	written atomic.Int64
 }
 
 // NewConn wraps a connection. It takes ownership: closing the Conn closes rw.
 func NewConn(rw io.ReadWriteCloser) *Conn {
-	return &Conn{
-		rw:   rw,
-		enc:  pktline.NewEncoder(rw),
-		scan: pktline.NewScanner(rw),
-	}
+	c := &Conn{rw: rw}
+
+	// The encoder and the scanner are given counting views of rw, so
+	// everything they put on or take off the wire is accounted for —
+	// pkt-line headers and flush-pkts included.
+	c.enc = pktline.NewEncoder(&countingWriter{w: rw, n: &c.written})
+	c.scan = pktline.NewScanner(&countingReader{r: rw, n: &c.read})
+
+	return c
+}
+
+// BytesRead reports how many bytes have arrived on this connection since it
+// was opened, framing included.
+func (c *Conn) BytesRead() int64 {
+	return c.read.Load()
+}
+
+// BytesWritten reports how many bytes have gone out on this connection since
+// it was opened, framing included.
+func (c *Conn) BytesWritten() int64 {
+	return c.written.Load()
+}
+
+// countingReader and countingWriter tally what passes through them. They sit
+// between the pkt-line codecs and the connection, which is the one point every
+// byte of the protocol has to cross.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+// Read implements io.Reader.
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+
+	return n, err
+}
+
+type countingWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+// Write implements io.Writer.
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n.Add(int64(n))
+
+	return n, err
 }
 
 // Close closes the underlying connection.
@@ -255,11 +307,11 @@ func (c *Conn) PackWriter() *PackWriter {
 func (w *PackWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 
-	for len(w.buf) >= chunkSize {
-		if err := w.conn.enc.Encode(w.buf[:chunkSize]); err != nil {
+	for len(w.buf) >= ChunkSize {
+		if err := w.conn.enc.Encode(w.buf[:ChunkSize]); err != nil {
 			return 0, err
 		}
-		w.buf = w.buf[chunkSize:]
+		w.buf = w.buf[ChunkSize:]
 	}
 
 	return len(p), nil

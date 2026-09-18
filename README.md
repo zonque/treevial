@@ -30,7 +30,7 @@ go get github.com/zonque/treevial
 | Import | For | Pulls in |
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
+| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
@@ -383,6 +383,38 @@ a few objects instead of the whole graph. The `Ack` is how the server learns
 the client has caught up; until it arrives the client counts as behind. A
 client that reconnects and names what it holds is sent nothing at all.
 
+## What went over the wire
+
+Both ends count what they read and write at the one place every byte of the
+protocol has to cross — the connection itself — so the figures include the
+pkt-line framing and are measured rather than estimated from an object count.
+
+A client is told what each push cost, and what the connection has cost so far:
+
+```go
+for u := range updates {
+	log.Printf("%d objects, %d bytes (%d in total)",
+		u.ObjectCount, u.Bytes, u.TotalBytes)
+}
+```
+
+`Update.Bytes` covers the update message, the pack that followed it and the
+headers around both, taken from before the message was read to after its pack
+was drained. `Client.Received` and `Client.Sent` give the running totals at any
+moment; a client's own traffic is one register line and one acknowledgement per
+push.
+
+The server reports the same from the other side, per subscriber:
+
+```go
+for _, sub := range srv.Subscribers() {
+	log.Printf("%s: %d bytes sent, %d received", sub.Ref, sub.Sent, sub.Received)
+}
+```
+
+Once a subscriber is up to date the two counts agree exactly, since they are
+the same bytes seen from either end.
+
 ## Per-ref data, released on disconnect
 
 The server owns no objects of its own. It asks the `Provider` for a ref's graph
@@ -421,8 +453,9 @@ seconds after each subscriber has caught up:
 
 ```
 [refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
-[refs/heads/printer-7/config] synced at 35ae729e…; setting Network.Primary.MTU in 2s
+[refs/heads/printer-7/config] synced at 35ae729e… after 949 bytes; setting Network.Primary.MTU in 2s
 [refs/heads/printer-7/config] moving -> 30e5ce80… and pushing
+[refs/heads/printer-7/config] synced at 30e5ce80…; that push cost 409 bytes, 1358 sent in total
 [refs/heads/printer-7/config] subscriber gone; released its config and objects (0 refs held)
 ```
 
@@ -437,7 +470,7 @@ become visible: a slice of scalars or a protobuf message is one `blob`, a nested
 struct or a map a `tree`.
 
 ```
-push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
+push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects, 949 B on the wire (949 B in total)
     + 040000 tree 8076d140…	Audio
     + 100644 blob 413477a4…	Audio/Delay             ← proto.Message: one blob
     + 100644 blob d594cf69…	Audio/Gain
@@ -451,7 +484,7 @@ push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
     + 100644 blob 37021f4a…	Network/Primary/MTU
   *shared.Config = { …the whole value… }
 
-push 2: refs/heads/printer-7/config -> 30e5ce80…, 4 objects received
+push 2: refs/heads/printer-7/config -> 30e5ce80…, 4 objects, 409 B on the wire (1.3 KiB in total)
     ~ 040000 tree 40018139…	Network
     ~ 040000 tree 9d078488…	Network/Primary
     ~ 100644 blob bc5d0b77…	Network/Primary/MTU
@@ -465,6 +498,7 @@ That second push is the whole mechanism in three lines: one blob moved, and the
 two trees above it had to follow. Nothing else is listed because nothing else
 moved — which is why the push carried four objects rather than seventeen, why
 `SelectSince` had nothing else to send, and why `ApplySince` decoded one leaf.
+On the wire that is 409 bytes against the first push's 949, framing included.
 
 Seventeen objects the first time — eleven leaves and six trees — and four the
 second: the rewritten blob plus `Primary`, `Network` and the root, the root

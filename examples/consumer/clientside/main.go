@@ -59,7 +59,8 @@ func main() {
 			log.Fatal(err)
 		}
 
-		log.Printf("%s -> %s, %d objects", u.Ref, u.Hash, u.ObjectCount)
+		log.Printf("%s -> %s, %d objects, %d bytes (%d in total)",
+			u.Ref, u.Hash, u.ObjectCount, u.Bytes, u.TotalBytes)
 		log.Printf("  owner   %s (%s)", current.Owner.Name, current.Owner.Team)
 		log.Printf("  display brightness %d, rotation %d", current.Display.Brightness, current.Display.Rotation)
 		log.Printf("  seen    %s", current.Seen.AsTime())

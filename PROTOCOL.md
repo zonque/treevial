@@ -102,7 +102,10 @@ client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
 ```
 
 Seventeen objects the first time and four the second, because the four are all
-that moved: the second pack is 347 bytes against 886.
+that moved: the second pack is 347 bytes against 886. Counting the lines in
+full — the update message, the headers, the flush-pkt — the first update is 949
+bytes on the wire and the second 409, which is what both ends report having
+exchanged.
 
 ## Connection lifetime
 

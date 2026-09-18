@@ -76,7 +76,9 @@ func run(addr, clientID string) error {
 	for u := range updates {
 		push++
 
-		log.Printf("push %d: %s -> %s, %d objects received", push, u.Ref, u.Hash, u.ObjectCount)
+		log.Printf("push %d: %s -> %s, %d objects, %s on the wire (%s in total)",
+			push, u.Ref, u.Hash, u.ObjectCount,
+			size(u.Bytes), size(u.TotalBytes))
 
 		report, err := render(u, &config)
 		if err != nil {
@@ -159,6 +161,17 @@ func render(u client.Update, config *shared.Config) (string, error) {
 	fmt.Fprintf(&b, "  %s = %s\n", name, encoded)
 
 	return b.String(), nil
+}
+
+// size renders a byte count the way a human reads it. The figures it is given
+// are measured on the connection, framing and all, so they are what the link
+// actually carried.
+func size(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+
+	return fmt.Sprintf("%.1f KiB", float64(n)/1024)
 }
 
 // indent shifts a block of lines under the push they belong to.

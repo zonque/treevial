@@ -49,13 +49,21 @@ type Subscription struct {
 	// Synced is the hash the subscriber has confirmed it fully interpreted,
 	// or the zero hash if it has not caught up yet.
 	Synced plumbing.Hash
+	// Sent is how many bytes have gone out on this subscriber's connection
+	// since it was accepted: every update and its pack, pkt-line framing
+	// included. Received is the other direction, which for a client is one
+	// registration and one acknowledgement per push.
+	Sent     int64
+	Received int64
 }
 
 // subscriber is one connected client. Its whole state is the hash it last
 // acknowledged: holding a tree means holding everything under it, so a single
 // hash is enough for the server to work out what it still needs.
 type subscriber struct {
-	ref    string
+	ref  string
+	conn *wire.Conn
+	// store holds the objects behind ref.
 	store  *objects.Store
 	notify chan plumbing.Hash
 
@@ -68,7 +76,15 @@ func (c *subscriber) state() Subscription {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return Subscription{Ref: c.ref, Head: c.head, Synced: c.synced}
+	// The connection keeps its own tally and is safe to ask at any time, so
+	// the byte counts need no locking of their own.
+	return Subscription{
+		Ref:      c.ref,
+		Head:     c.head,
+		Synced:   c.synced,
+		Sent:     c.conn.BytesWritten(),
+		Received: c.conn.BytesRead(),
+	}
 }
 
 func (c *subscriber) held() plumbing.Hash {
@@ -286,7 +302,7 @@ func (s *Server) serve(conn *wire.Conn) error {
 		return err
 	}
 
-	c, err := s.connect(ref, synced)
+	c, err := s.connect(conn, ref, synced)
 	if err != nil {
 		return err
 	}
@@ -342,7 +358,7 @@ func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 // connect prepares the ref's objects and registers the subscriber. Only one
 // connection per ref is served at a time, so prepared data has exactly one
 // owner.
-func (s *Server) connect(ref string, synced plumbing.Hash) (*subscriber, error) {
+func (s *Server) connect(conn *wire.Conn, ref string, synced plumbing.Hash) (*subscriber, error) {
 	s.mu.Lock()
 	if _, taken := s.subscribers[ref]; taken {
 		s.mu.Unlock()
@@ -367,6 +383,7 @@ func (s *Server) connect(ref string, synced plumbing.Hash) (*subscriber, error) 
 
 	c := &subscriber{
 		ref:    ref,
+		conn:   conn,
 		store:  store,
 		notify: make(chan plumbing.Hash, 1),
 		head:   head,
