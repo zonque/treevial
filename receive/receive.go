@@ -2,6 +2,16 @@
 // object store: each object is inflated, identified and handed to a Handler
 // during the read, and the bytes are then free to be discarded. Nothing is
 // written to disk or kept in a repository.
+//
+// A [Graph] is the Handler most callers want: it keeps what it is given in
+// plain Go maps and can then be asked what arrived.
+//
+//   - [Graph.Leaves] gives every blob by path, which is what
+//     structtree.Apply reads.
+//   - [Graph.Diff] gives the paths that differ between two trees.
+//   - [Graph.Listing] renders a whole tree the way "git ls-tree -r -t" would,
+//     and [Graph.ListingSince] renders only what moved between two, in the
+//     same format.
 package receive
 
 import (

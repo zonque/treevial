@@ -31,7 +31,7 @@ go get github.com/zonque/treevial
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update` | client repositories |
-| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing` | client repositories |
+| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
@@ -426,56 +426,49 @@ seconds after each subscriber has caught up:
 [refs/heads/printer-7/config] subscriber gone; released its config and objects (0 refs held)
 ```
 
-Each push prints three views: the serialised tree, the paths that moved, and
-the part of the struct they landed in — the deepest field containing every
-change, which on the first push is the whole value and after a one-field change
-is the struct holding that field.
+Each push prints two views: the objects it moved, and the part of the struct
+they landed in — the deepest field containing every change, which on the first
+push is the whole value and after a one-field change is the struct holding that
+field.
 
-`Graph.Listing` renders the received objects the way `git ls-tree -r -t` would,
-which is where the leaf rules become visible — a slice or a protobuf message is
-one `blob`, a nested struct a `tree`:
+`Graph.ListingSince` renders the objects that moved the way `git ls-tree -r -t`
+renders a whole tree, with a marker in front. It is also where the leaf rules
+become visible: a slice of scalars or a protobuf message is one `blob`, a nested
+struct or a map a `tree`.
 
 ```
 push 1: refs/heads/printer-7/config -> 35ae729e…, 17 objects received
-  tree 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
-    040000 tree 8076d140…	Audio
-    100644 blob 413477a4…	Audio/Delay             ← proto.Message: one blob
-    100644 blob d594cf69…	Audio/Gain
-    040000 tree 7581aab3…	Device
-    100644 blob 664684c1…	Device/Installed        ← tagged `treevial:"leaf"`
-    040000 tree eb5bd8cd…	Device/Location         ← untagged struct: a subtree
-    100644 blob 60c9f71d…	Device/Location/Room
+    + 040000 tree 8076d140…	Audio
+    + 100644 blob 413477a4…	Audio/Delay             ← proto.Message: one blob
+    + 100644 blob d594cf69…	Audio/Gain
+    + 040000 tree 7581aab3…	Device
+    + 100644 blob 664684c1…	Device/Installed        ← tagged `treevial:"leaf"`
+    + 040000 tree eb5bd8cd…	Device/Location         ← untagged struct: a subtree
+    + 100644 blob 60c9f71d…	Device/Location/Room
     …
-    040000 tree 92b4e348…	Network
-    100644 blob ee000805…	Network/DNS             ← a slice: one blob
-    040000 tree be9911a3…	Network/Primary
-    100644 blob 37021f4a…	Network/Primary/MTU
-  + Audio/Delay  413477a4  "\x10\x80\xb6\xdc\x05"
-  + Device/Installed  664684c1  "\"2023-11-14T22:13:20Z\""
-  …
+    + 100644 blob ee000805…	Network/DNS             ← a slice of scalars: one blob
+    + 040000 tree be9911a3…	Network/Primary
+    + 100644 blob 37021f4a…	Network/Primary/MTU
   *shared.Config = { …the whole value… }
 
 push 2: refs/heads/printer-7/config -> 30e5ce80…, 4 objects received
-    040000 tree 8076d140…	Audio                   ← unchanged
-    100644 blob 413477a4…	Audio/Delay             ← unchanged
-    …
-    040000 tree 40018139…	Network                 ← new
-    040000 tree 9d078488…	Network/Primary         ← new
-    100644 blob bc5d0b77…	Network/Primary/MTU     ← new
-  ~ Network/Primary/MTU  bc5d0b77  "9000"
+    ~ 040000 tree 40018139…	Network
+    ~ 040000 tree 9d078488…	Network/Primary
+    ~ 100644 blob bc5d0b77…	Network/Primary/MTU
   Network/Primary = {
     "Address": "10.0.0.7",
     "MTU": 9000
   }
 ```
 
-Four object hashes moved between those two listings — the rewritten blob and
-the three trees above it — and the other thirteen are identical. That is the
-whole mechanism, visible: it is why the second push carried four objects, why
+That second push is the whole mechanism in three lines: one blob moved, and the
+two trees above it had to follow. Nothing else is listed because nothing else
+moved — which is why the push carried four objects rather than seventeen, why
 `SelectSince` had nothing else to send, and why `ApplySince` decoded one leaf.
 
 Seventeen objects the first time — eleven leaves and six trees — and four the
-second: the rewritten blob plus `Primary`, `Network` and the root.
+second: the rewritten blob plus `Primary`, `Network` and the root, the root
+being the fourth and not listed, since a listing names what is *in* a tree.
 
 The value it prints is a `shared.Config` — the same type the server walked —
 filled in by `ApplySince`, so on the second push exactly one leaf was decoded

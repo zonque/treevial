@@ -25,7 +25,6 @@ import (
 
 	"github.com/zonque/treevial/client"
 	"github.com/zonque/treevial/demo/shared"
-	"github.com/zonque/treevial/receive"
 	"github.com/zonque/treevial/structtree"
 )
 
@@ -120,28 +119,19 @@ func render(u client.Update, config *shared.Config) (string, error) {
 
 	var b strings.Builder
 
-	// The serialised tree, so it is visible which paths became blobs and
-	// which became trees, and which object hashes this push replaced.
-	listing, err := u.Graph.Listing(u.Hash)
+	// Every object this push moved, blobs and the trees above them, so it
+	// is visible which paths are blobs, which are trees, and how far up a
+	// change to one leaf reached.
+	changeset, err := u.Graph.ListingSince(u.Previous, u.Hash)
 	if err != nil {
 		return "", err
 	}
 
-	fmt.Fprintf(&b, "  tree %s\n", u.Hash)
-	b.WriteString(indent(listing))
+	b.WriteString(indent(changeset))
 
 	paths := make([]string, 0, len(changes))
-
 	for _, c := range changes {
 		paths = append(paths, c.Path)
-
-		if c.Kind == receive.Deleted {
-			fmt.Fprintf(&b, "  %s %s\n", c.Kind.Symbol(), c.Path)
-
-			continue
-		}
-
-		fmt.Fprintf(&b, "  %s %s  %s  %q\n", c.Kind.Symbol(), c.Path, c.Hash.String()[:8], string(c.Content))
 	}
 
 	// Show only the part of the struct the changes landed in. On the first
