@@ -80,7 +80,9 @@ error <code> <message>
 
 `error` reports a refusal, after which the server hangs up. `<code>` is one of
 `invalid`, `exists` or `internal`; `<message>` is the rest of the line and is
-for people, not for matching on.
+for people, not for matching on. treevial's own server sends `invalid` and
+`internal`; `exists` is part of the vocabulary for a server that turns a ref
+away because something else already has it.
 
 ## An exchange
 
@@ -115,8 +117,11 @@ perfectly good connection in the meantime. Both sides enable TCP keepalive at 30
 seconds so that NATs and middleboxes do not forget an idle connection; the
 probes do not close a healthy one.
 
-One connection carries one subscription. A second connection naming a ref that
-already has a subscriber is refused with `exists`.
+One connection carries one subscription, but a ref may have any number of
+subscribers: a second connection naming a ref somebody else is already
+following is served alongside it. Each is sent what it alone is missing,
+worked out from the `<synced>` it registered with and the `ack`s it has sent
+since, and all of them are pushed to when the ref moves.
 
 Closing the connection is how a subscription ends. The server notices, drops the
 subscriber and releases whatever it had prepared for that ref.

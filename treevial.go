@@ -46,8 +46,10 @@ const (
 	// CodeInvalid means the request was malformed: an unusable ref, a hash
 	// that is not a hash, a state the server cannot resolve.
 	CodeInvalid ErrorCode = "invalid"
-	// CodeAlreadyExists means another connection is already subscribed to
-	// that ref.
+	// CodeAlreadyExists means something else already holds what was asked
+	// for. treevial's own server does not send it, since a ref may have
+	// any number of subscribers; it is here for a server that does turn a
+	// ref away because something else has claimed it.
 	CodeAlreadyExists ErrorCode = "exists"
 	// CodeInternal means the server failed on its own account.
 	CodeInternal ErrorCode = "internal"

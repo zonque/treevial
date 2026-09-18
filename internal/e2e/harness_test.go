@@ -36,6 +36,13 @@ type testProvider struct {
 	held     map[string]*refData
 	prepared []string
 	released []string
+	// calls records when a preparation started and when a release
+	// finished, in order, so a test can see whether the two ever overlap
+	// for one ref.
+	calls []string
+	// releaseDelay makes letting go take a while, which is when an
+	// overlapping preparation would show up.
+	releaseDelay time.Duration
 }
 
 func newTestProvider() *testProvider {
@@ -43,6 +50,10 @@ func newTestProvider() *testProvider {
 }
 
 func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+	p.mu.Lock()
+	p.calls = append(p.calls, "prepare "+ref)
+	p.mu.Unlock()
+
 	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
 
 	builder, err := structtree.NewBuilder(data.store, data.config)
@@ -67,10 +78,28 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error
 
 func (p *testProvider) Release(ref string) {
 	p.mu.Lock()
+	delay := p.releaseDelay
+	p.mu.Unlock()
+
+	// Letting go may take a provider a while — closing files, draining a
+	// cache. Whatever the server does next must not depend on it being
+	// quick.
+	time.Sleep(delay)
+
+	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	delete(p.held, ref)
 	p.released = append(p.released, ref)
+	p.calls = append(p.calls, "release "+ref)
+}
+
+// lifecycle returns the preparations and releases in order.
+func (p *testProvider) lifecycle() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.calls...)
 }
 
 // retune changes one deeply nested field and rebuilds, declaring the field it

@@ -269,31 +269,6 @@ func TestClientReconnectingIsPreparedAgain(t *testing.T) {
 	}
 }
 
-func TestSecondConnectionWithTheSameIDIsRejected(t *testing.T) {
-	h := newHarness(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	_, updates := h.subscribe(t, ctx, refA)
-	nextUpdate(t, updates)
-
-	c2, err := client.Dial(ctx, h.addr)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	defer c2.Close()
-
-	updates2, err := c2.Subscribe(ctx, refA)
-	if err == nil {
-		err = drainForError(t, c2, updates2)
-	}
-
-	if got := treevial.CodeOf(err); got != treevial.CodeAlreadyExists {
-		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeAlreadyExists)
-	}
-}
-
 func TestClientWithAnUnusableRefIsRejected(t *testing.T) {
 	h := newHarness(t)
 

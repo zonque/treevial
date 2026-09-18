@@ -52,36 +52,107 @@ func run(addr string, mutate time.Duration) error {
 	return srv.Serve(lis)
 }
 
-// mutateSyncedRefs watches for subscribers that have caught up and, once each
-// has, changes a field of its configuration and moves its ref, which makes the
-// server push again of its own accord. One change per ref is enough to show it.
+// mutateSyncedRefs watches for refs every subscriber has caught up on and,
+// once one has, changes a field of its configuration and moves it, which makes
+// the server push to all of them of its own accord. One change per ref is
+// enough to show it.
 func mutateSyncedRefs(srv *server.Server, provider *demoProvider, after time.Duration) {
 	done := map[string]bool{}
 
 	for range time.Tick(50 * time.Millisecond) {
-		for _, sub := range srv.Subscribers() {
-			if done[sub.Ref] || sub.Synced.IsZero() || sub.Synced != sub.Head {
+		for ref := range quietRefs(srv) {
+			if done[ref] {
 				continue
 			}
 
-			done[sub.Ref] = true
+			done[ref] = true
 
-			go mutateOnce(srv, provider, sub, after)
+			go mutateOnce(srv, provider, ref, after)
 		}
 	}
 }
 
-func mutateOnce(
-	srv *server.Server,
-	provider *demoProvider,
-	sub server.Subscription,
-	after time.Duration,
-) {
-	ref := sub.Ref
+// quiet is a ref nobody is mid-transfer on: every subscriber following it has
+// taken up the head it points at.
+type quiet struct {
+	head        plumbing.Hash
+	subscribers int
+	sent        int64
+}
 
-	log.Printf("[%s] synced at %s after %d bytes; setting Network.Primary.MTU in %s",
-		ref, sub.Head, sub.Sent, after)
+// quietRefs returns the refs whose subscribers have all caught up. Several
+// clients may follow one ref, so this is a statement about all of them —
+// rebuilding a store while any one of them is being pushed to would have the
+// provider writing under the server's feet.
+func quietRefs(srv *server.Server) map[string]quiet {
+	type tally struct {
+		state  quiet
+		behind bool
+	}
+
+	refs := map[string]*tally{}
+
+	for _, sub := range srv.Subscribers() {
+		t, following := refs[sub.Ref]
+		if !following {
+			t = &tally{state: quiet{head: sub.Head}}
+			refs[sub.Ref] = t
+		}
+
+		t.state.subscribers++
+		t.state.sent += sub.Sent
+
+		if sub.Synced.IsZero() || sub.Synced != sub.Head {
+			t.behind = true
+		}
+	}
+
+	out := map[string]quiet{}
+	for ref, t := range refs {
+		if !t.behind {
+			out[ref] = t.state
+		}
+	}
+
+	return out
+}
+
+// awaitQuiet waits until every subscriber of ref has taken up its current
+// head, and until that head is the one given if one is named.
+func awaitQuiet(srv *server.Server, ref string, head plumbing.Hash) (quiet, bool) {
+	deadline := time.Now().Add(10 * time.Second)
+
+	for time.Now().Before(deadline) {
+		state, ok := quietRefs(srv)[ref]
+		if ok && (head.IsZero() || state.head == head) {
+			return state, true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return quiet{}, false
+}
+
+func mutateOnce(srv *server.Server, provider *demoProvider, ref string, after time.Duration) {
+	state, ok := awaitQuiet(srv, ref, plumbing.ZeroHash)
+	if !ok {
+		return
+	}
+
+	log.Printf("[%s] %d subscriber(s) synced at %s after %d bytes; setting Network.Primary.MTU in %s",
+		ref, state.subscribers, state.head, state.sent, after)
 	time.Sleep(after)
+
+	// Somebody may have joined during the wait and still be taking up the
+	// tree, and the rebuild writes to the store they are being served
+	// from.
+	state, ok = awaitQuiet(srv, ref, plumbing.ZeroHash)
+	if !ok {
+		log.Printf("[%s] still mid-transfer; leaving it alone", ref)
+
+		return
+	}
 
 	next, err := provider.Retune(ref)
 	if err != nil {
@@ -90,7 +161,7 @@ func mutateOnce(
 		return
 	}
 
-	log.Printf("[%s] moving -> %s and pushing", ref, next)
+	log.Printf("[%s] moving -> %s and pushing to %d subscriber(s)", ref, next, state.subscribers)
 
 	if err := srv.SetHead(ref, next); err != nil {
 		log.Printf("[%s] set head: %v", ref, err)
@@ -98,30 +169,22 @@ func mutateOnce(
 		return
 	}
 
-	reportCost(srv, ref, next, sub.Sent)
+	reportCost(srv, ref, next, state.sent)
 }
 
-// reportCost waits for the subscriber to acknowledge the new head and then
-// says what that push cost, measured against what had already gone out. The
-// counts come from the connection itself, so they include the pkt-line framing
-// and are what the link carried rather than an estimate from the object count.
+// reportCost waits for every subscriber to acknowledge the new head and then
+// says what that push cost across all of them, measured against what had
+// already gone out. The counts come from the connections themselves, so they
+// include the pkt-line framing and are what the links carried rather than an
+// estimate from the object count.
 func reportCost(srv *server.Server, ref string, head plumbing.Hash, before int64) {
-	deadline := time.Now().Add(10 * time.Second)
-
-	for time.Now().Before(deadline) {
-		for _, sub := range srv.Subscribers() {
-			if sub.Ref != ref || sub.Synced != head {
-				continue
-			}
-
-			log.Printf("[%s] synced at %s; that push cost %d bytes, %d sent in total",
-				ref, head, sub.Sent-before, sub.Sent)
-
-			return
-		}
-
-		time.Sleep(10 * time.Millisecond)
+	state, ok := awaitQuiet(srv, ref, head)
+	if !ok {
+		return
 	}
+
+	log.Printf("[%s] %d subscriber(s) synced at %s; that push cost %d bytes, %d sent in total",
+		ref, state.subscribers, head, state.sent-before, state.sent)
 }
 
 func watchSignals(srv *server.Server) {

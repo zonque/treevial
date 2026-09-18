@@ -4,6 +4,10 @@
 // objects and sends them down the long-lived connection on its own initiative,
 // whenever the ref moves.
 //
+// Any number of clients may follow the same ref. They are served from one set
+// of prepared objects and each moves at its own pace, so a slow subscriber
+// delays nobody else.
+//
 // A server repository depends on this package and on
 // [github.com/zonque/treevial/objects]; it does not need the client side at
 // all.
@@ -24,8 +28,14 @@ import (
 )
 
 // Provider supplies and disposes of the objects behind one ref. The server owns
-// neither: it asks for a ref's data when a client subscribes to it, and hands
-// it back when that client goes away.
+// neither: it asks for a ref's data when the first client subscribes to it, and
+// hands it back once the last one has disconnected.
+//
+// Prepare and Release are called once per ref, not once per connection, and
+// never overlap for the same ref: a Release always completes before that ref
+// can be prepared again. Several subscribers to one ref share what Prepare
+// returned, so a store must not be written to while any of them may be reading
+// it — see [Server.Subscribers] for how to tell.
 //
 // The ref is whatever the client asked for, passed on unchanged. What it means
 // — a device, a tenant, a configuration — is the provider's business; the
@@ -34,17 +44,22 @@ type Provider interface {
 	// Prepare builds the objects behind ref and returns the store holding
 	// them together with the hash the ref points at.
 	Prepare(ref string) (*objects.Store, plumbing.Hash, error)
-	// Release is called once, after the subscriber has disconnected, so
-	// whatever Prepare set up can be dropped.
+	// Release is called once, after the last subscriber to ref has
+	// disconnected, so whatever Prepare set up can be dropped.
 	Release(ref string)
 }
 
 // Subscription is a snapshot of what the server knows about one connected
-// subscriber.
+// subscriber. Several subscribers may share a Ref, in which case they differ in
+// Addr, in how far they have got, and in what they have been sent.
 type Subscription struct {
 	// Ref the subscriber asked for, verbatim.
 	Ref string
-	// Head is the hash that ref points at.
+	// Addr is where the subscriber connected from, which is what tells two
+	// subscribers of one ref apart.
+	Addr string
+	// Head is the hash that ref points at. Subscribers of one ref all see
+	// the same head; what differs is how much of it they have taken up.
 	Head plumbing.Hash
 	// Synced is the hash the subscriber has confirmed it fully interpreted,
 	// or the zero hash if it has not caught up yet.
@@ -57,31 +72,85 @@ type Subscription struct {
 	Received int64
 }
 
+// refState is everything the server holds for one ref: the objects behind it,
+// the hash it points at, and the subscribers following it. It outlives any one
+// connection — the first subscriber brings it into being and the last one to
+// leave takes it away again.
+type refState struct {
+	// ready is closed once the provider has answered. store, prepared and
+	// err are written before that and only read after it.
+	ready    chan struct{}
+	store    *objects.Store
+	prepared bool
+	err      error
+
+	// retiring is set when the last subscriber has gone and the provider is
+	// being given its data back; retired is closed once that has happened.
+	// Together they keep a ref from being prepared again while its previous
+	// release is still running. Both, like members, are guarded by the
+	// server's mutex: they change as connections come and go, which is the
+	// registry's business rather than this value's.
+	retiring bool
+	retired  chan struct{}
+	members  map[*subscriber]struct{}
+
+	mu   sync.Mutex
+	head plumbing.Hash
+}
+
+func newRefState() *refState {
+	return &refState{
+		ready:   make(chan struct{}),
+		retired: make(chan struct{}),
+		members: map[*subscriber]struct{}{},
+	}
+}
+
+func (st *refState) currentHead() plumbing.Hash {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	return st.head
+}
+
+// setHead moves the ref. Every subscriber following it is behind until it says
+// otherwise.
+func (st *refState) setHead(hash plumbing.Hash) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.head = hash
+}
+
 // subscriber is one connected client. Its whole state is the hash it last
 // acknowledged: holding a tree means holding everything under it, so a single
-// hash is enough for the server to work out what it still needs.
+// hash is enough for the server to work out what it still needs. The objects
+// and the head it is being moved towards belong to the ref, not to it.
 type subscriber struct {
-	ref  string
-	conn *wire.Conn
-	// store holds the objects behind ref.
-	store  *objects.Store
-	notify chan plumbing.Hash
+	ref   string
+	addr  string
+	conn  *wire.Conn
+	state *refState
+	// notify is a signal rather than a queue: a woken subscriber reads the
+	// ref's current head, so a burst of moves cannot leave it at an old one.
+	notify chan struct{}
 
 	mu     sync.Mutex
-	head   plumbing.Hash
 	synced plumbing.Hash
 }
 
-func (c *subscriber) state() Subscription {
+func (c *subscriber) snapshot() Subscription {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	synced := c.synced
+	c.mu.Unlock()
 
 	// The connection keeps its own tally and is safe to ask at any time, so
 	// the byte counts need no locking of their own.
 	return Subscription{
 		Ref:      c.ref,
-		Head:     c.head,
-		Synced:   c.synced,
+		Addr:     c.addr,
+		Head:     c.state.currentHead(),
+		Synced:   synced,
 		Sent:     c.conn.BytesWritten(),
 		Received: c.conn.BytesRead(),
 	}
@@ -94,21 +163,6 @@ func (c *subscriber) held() plumbing.Hash {
 	return c.synced
 }
 
-// setHead moves the client's ref.
-func (c *subscriber) setHead(hash plumbing.Hash) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.head = hash
-}
-
-func (c *subscriber) currentHead() plumbing.Hash {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.head
-}
-
 // ack records that the client interpreted everything up to hash.
 func (c *subscriber) ack(hash plumbing.Hash) {
 	c.mu.Lock()
@@ -117,28 +171,39 @@ func (c *subscriber) ack(hash plumbing.Hash) {
 	c.synced = hash
 }
 
+// wake tells the subscriber its ref has moved.
+func (c *subscriber) wake() {
+	select {
+	case c.notify <- struct{}{}:
+	default:
+		// A wake-up is already pending, and one is as good as ten: the
+		// subscriber reads the current head when it gets to it.
+	}
+}
+
 // keepalivePeriod is how often the operating system probes an idle connection.
 // Probes keep NATs and middleboxes from forgetting a connection that may sit
 // quiet for hours; they do not close a healthy one.
 const keepalivePeriod = 30 * time.Second
 
-// Server publishes a ref per client and pushes the objects behind it.
+// Server publishes a set of refs and pushes the objects behind them to
+// everyone following.
 type Server struct {
 	provider Provider
 
-	mu          sync.Mutex
-	subscribers map[string]*subscriber
-	conns       map[*wire.Conn]struct{}
-	lis         net.Listener
-	stopped     bool
+	mu      sync.Mutex
+	refs    map[string]*refState
+	conns   map[*wire.Conn]struct{}
+	lis     net.Listener
+	stopped bool
 }
 
-// New returns a server that asks provider for each client's objects.
+// New returns a server that asks provider for each ref's objects.
 func New(provider Provider) *Server {
 	return &Server{
-		provider:    provider,
-		subscribers: map[string]*subscriber{},
-		conns:       map[*wire.Conn]struct{}{},
+		provider: provider,
+		refs:     map[string]*refState{},
+		conns:    map[*wire.Conn]struct{}{},
 	}
 }
 
@@ -202,24 +267,33 @@ func (s *Server) Stop() {
 	}
 }
 
-// SetHead points ref at hash and immediately wakes its subscriber. This is the
-// trigger for a push: nothing is requested by the client.
+// SetHead points ref at hash and immediately wakes everyone following it. This
+// is the trigger for a push: nothing is requested by the client.
+//
+// Every subscriber to the ref moves. What each is sent is worked out from what
+// it has acknowledged, so one that is several moves behind is brought up to the
+// current head in one go rather than walked through the states it missed.
 func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 	s.mu.Lock()
-	c, ok := s.subscribers[ref]
+	st, ok := s.refs[ref]
+
+	var following []*subscriber
+	if ok {
+		following = make([]*subscriber, 0, len(st.members))
+		for c := range st.members {
+			following = append(following, c)
+		}
+	}
 	s.mu.Unlock()
 
-	if !ok || c == nil {
+	if !ok {
 		return fmt.Errorf("nobody is subscribed to %q", ref)
 	}
 
-	c.setHead(hash)
+	st.setHead(hash)
 
-	select {
-	case c.notify <- hash:
-	default:
-		// A push is already queued for this client; it will pick up the
-		// newest head when it runs.
+	for _, c := range following {
+		c.wake()
 	}
 
 	return nil
@@ -229,24 +303,40 @@ func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 // subscribed to it.
 func (s *Server) Head(ref string) plumbing.Hash {
 	s.mu.Lock()
-	c, ok := s.subscribers[ref]
+	st, ok := s.refs[ref]
 	s.mu.Unlock()
 
-	if !ok || c == nil {
+	if !ok {
 		return plumbing.ZeroHash
 	}
 
-	return c.currentHead()
+	return st.currentHead()
 }
 
-// Subscribers snapshots the connected subscribers.
+// Subscribers snapshots the connected subscribers, one entry per connection.
+// Several entries may share a Ref.
+//
+// This is how a provider tells whether a ref is quiet: when every subscriber to
+// it reports Synced equal to Head, no push is in flight and its store can be
+// rebuilt.
 func (s *Server) Subscribers() []Subscription {
 	s.mu.Lock()
-	connected := make([]*subscriber, 0, len(s.subscribers))
-	for _, c := range s.subscribers {
-		// A nil entry is a ref claimed by a connection whose data is
-		// still being prepared.
-		if c != nil {
+	var connected []*subscriber
+
+	for _, st := range s.refs {
+		// A ref whose data is still being prepared has nothing to report
+		// yet, and one whose preparation failed never will.
+		select {
+		case <-st.ready:
+		default:
+			continue
+		}
+
+		if !st.prepared {
+			continue
+		}
+
+		for c := range st.members {
 			connected = append(connected, c)
 		}
 	}
@@ -254,7 +344,7 @@ func (s *Server) Subscribers() []Subscription {
 
 	out := make([]Subscription, 0, len(connected))
 	for _, c := range connected {
-		out = append(out, c.state())
+		out = append(out, c.snapshot())
 	}
 
 	return out
@@ -268,7 +358,8 @@ func (s *Server) isStopped() bool {
 }
 
 // handle serves one connection for its whole life. When it returns, the client
-// has disconnected and its resources are released.
+// has disconnected and, if it was the last one following its ref, that ref's
+// resources are released.
 func (s *Server) handle(nc net.Conn) {
 	conn := wire.NewConn(nc)
 
@@ -284,7 +375,7 @@ func (s *Server) handle(nc net.Conn) {
 		conn.Close()
 	}()
 
-	err := s.serve(conn)
+	err := s.serve(conn, nc.RemoteAddr().String())
 
 	// A refusal is told to the client; anything else is the connection
 	// itself going away, and there is nobody left to tell.
@@ -296,13 +387,13 @@ func (s *Server) handle(nc net.Conn) {
 
 // serve registers the client, pushes what it is missing, and then stays put,
 // pushing again every time its ref moves.
-func (s *Server) serve(conn *wire.Conn) error {
+func (s *Server) serve(conn *wire.Conn, addr string) error {
 	ref, synced, err := register(conn)
 	if err != nil {
 		return err
 	}
 
-	c, err := s.connect(conn, ref, synced)
+	c, err := s.connect(conn, addr, ref, synced)
 	if err != nil {
 		return err
 	}
@@ -314,7 +405,7 @@ func (s *Server) serve(conn *wire.Conn) error {
 	go func() { recvErr <- readAcks(conn, acks) }()
 
 	// Push what the client is missing right away, then on every ref change.
-	pending := c.currentHead()
+	pending := c.state.currentHead()
 
 	for {
 		if err := s.push(conn, c, pending); err != nil {
@@ -326,7 +417,11 @@ func (s *Server) serve(conn *wire.Conn) error {
 		}
 
 		select {
-		case pending = <-c.notify:
+		case <-c.notify:
+			// However many times the ref moved while this client was
+			// being brought up to date, what it owes it now is the
+			// head as it stands.
+			pending = c.state.currentHead()
 		case err := <-recvErr:
 			return err
 		}
@@ -355,60 +450,127 @@ func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 	return msg.Ref, msg.Hash, nil
 }
 
-// connect prepares the ref's objects and registers the subscriber. Only one
-// connection per ref is served at a time, so prepared data has exactly one
-// owner.
-func (s *Server) connect(conn *wire.Conn, ref string, synced plumbing.Hash) (*subscriber, error) {
-	s.mu.Lock()
-	if _, taken := s.subscribers[ref]; taken {
-		s.mu.Unlock()
-
-		return nil, treevial.Errorf(treevial.CodeAlreadyExists,
-			"%q already has a subscriber", ref)
-	}
-	// Claim the ref before preparing, so a second connection racing this
-	// one cannot have data prepared for it too.
-	s.subscribers[ref] = nil
-	s.mu.Unlock()
-
-	store, head, err := s.provider.Prepare(ref)
-	if err != nil {
-		s.mu.Lock()
-		delete(s.subscribers, ref)
-		s.mu.Unlock()
-
-		return nil, treevial.Errorf(treevial.CodeInternal,
-			"prepare data for %q: %v", ref, err)
-	}
-
+// connect joins the subscriber to its ref, preparing that ref's objects if it
+// is the first to ask for them. Everyone who arrives while a preparation is
+// running waits for that one answer rather than asking for another.
+func (s *Server) connect(
+	conn *wire.Conn,
+	addr, ref string,
+	synced plumbing.Hash,
+) (*subscriber, error) {
 	c := &subscriber{
 		ref:    ref,
+		addr:   addr,
 		conn:   conn,
-		store:  store,
-		notify: make(chan plumbing.Hash, 1),
-		head:   head,
+		notify: make(chan struct{}, 1),
 		synced: synced,
 	}
 
-	s.mu.Lock()
-	s.subscribers[ref] = c
-	s.mu.Unlock()
+	var first bool
+
+	for {
+		s.mu.Lock()
+		st, following := s.refs[ref]
+
+		if following && st.retiring {
+			// The last subscriber has just left and the provider is
+			// being given this ref's data back. Let that finish, then
+			// start again from a clean slate.
+			s.mu.Unlock()
+			<-st.retired
+
+			continue
+		}
+
+		if !following {
+			st = newRefState()
+			s.refs[ref] = st
+			first = true
+		}
+
+		st.members[c] = struct{}{}
+		s.mu.Unlock()
+
+		c.state = st
+
+		break
+	}
+
+	if first {
+		s.prepare(c.state, ref)
+	}
+
+	// Either this connection's own preparation or the one it joined.
+	<-c.state.ready
+
+	if err := c.state.err; err != nil {
+		s.disconnect(c)
+
+		return nil, err
+	}
 
 	return c, nil
 }
 
+// prepare asks the provider for a ref's objects, once, and lets everyone
+// waiting on the answer through.
+func (s *Server) prepare(st *refState, ref string) {
+	store, head, err := s.provider.Prepare(ref)
+	if err != nil {
+		st.err = treevial.Errorf(treevial.CodeInternal,
+			"prepare data for %q: %v", ref, err)
+
+		// A failed preparation is not remembered: the entry goes, so the
+		// next client to ask for this ref has the provider tried again
+		// rather than inheriting this answer.
+		s.mu.Lock()
+		if s.refs[ref] == st {
+			delete(s.refs, ref)
+		}
+		s.mu.Unlock()
+	} else {
+		st.store = store
+		st.prepared = true
+		st.setHead(head)
+	}
+
+	close(st.ready)
+}
+
 // disconnect is the other half of connect: it runs when a subscriber's
-// connection ends, however it ended, and gives the provider its chance to let
-// go.
+// connection ends, however it ended. The provider gets its data back only once
+// the last subscriber to that ref has gone.
 func (s *Server) disconnect(c *subscriber) {
+	st := c.state
+
 	s.mu.Lock()
-	// Only drop the entry if it is still this connection's.
-	if current, ok := s.subscribers[c.ref]; ok && current == c {
-		delete(s.subscribers, c.ref)
+	delete(st.members, c)
+	// Only this ref's last subscriber retires it, and only while the entry
+	// is still the one it joined.
+	last := len(st.members) == 0 && s.refs[c.ref] == st
+	if last {
+		// The entry stays in place, marked, until the provider has been
+		// given its data back, so the ref cannot be prepared again while
+		// this release is still running.
+		st.retiring = true
 	}
 	s.mu.Unlock()
 
-	s.provider.Release(c.ref)
+	if !last {
+		return
+	}
+
+	if st.prepared {
+		s.provider.Release(c.ref)
+	}
+
+	s.mu.Lock()
+	if s.refs[c.ref] == st {
+		delete(s.refs, c.ref)
+	}
+	s.mu.Unlock()
+
+	close(st.retired)
 }
 
 // awaitAck blocks until the client confirms it has interpreted the update, so
@@ -430,9 +592,11 @@ func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recv
 	}
 }
 
-// push sends the client the objects between the tree it holds and hash.
+// push sends the client the objects between the tree it holds and hash. What
+// that is depends on the subscriber, not on the ref: two clients following one
+// ref from different starting points are sent different objects.
 func (s *Server) push(conn *wire.Conn, c *subscriber, hash plumbing.Hash) error {
-	missing, err := c.store.SelectSince(c.held(), hash)
+	missing, err := c.state.store.SelectSince(c.held(), hash)
 	if err != nil {
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
@@ -446,7 +610,7 @@ func (s *Server) push(conn *wire.Conn, c *subscriber, hash plumbing.Hash) error 
 	w := conn.PackWriter()
 
 	if len(missing) > 0 {
-		if _, err := c.store.EncodePack(w, missing); err != nil {
+		if _, err := c.state.store.EncodePack(w, missing); err != nil {
 			return treevial.Errorf(treevial.CodeInternal, "encode pack: %v", err)
 		}
 	}

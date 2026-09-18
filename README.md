@@ -383,6 +383,10 @@ a few objects instead of the whole graph. The `Ack` is how the server learns
 the client has caught up; until it arrives the client counts as behind. A
 client that reconnects and names what it holds is sent nothing at all.
 
+This is per subscriber, not per ref: two clients following one ref from
+different starting points are sent different objects, worked out from the same
+tree.
+
 ## What went over the wire
 
 Both ends count what they read and write at the one place every byte of the
@@ -415,17 +419,54 @@ for _, sub := range srv.Subscribers() {
 Once a subscriber is up to date the two counts agree exactly, since they are
 the same bytes seen from either end.
 
-## Per-ref data, released on disconnect
+## Many subscribers, one ref
+
+Any number of clients may follow the same ref, and all of them move when it
+does. `SetHead` wakes every one; what each is then sent is worked out from the
+hash *it* acknowledged, so a client that has been away for three moves is
+brought to the current head in one push rather than walked through the states
+it missed, and a slow subscriber holds nobody else up.
+
+They are served from one prepared store. Reading it from several pushes at once
+is safe; writing to it while any of them is mid-transfer is not, and that is
+the one rule a provider has to keep. `Subscribers` is how to tell: when every
+entry for a ref reports `Synced` equal to `Head`, no push is in flight and the
+store can be rebuilt.
+
+```go
+// Everyone following this ref has taken up its current head.
+func quiet(srv *server.Server, ref string) bool {
+	for _, sub := range srv.Subscribers() {
+		if sub.Ref == ref && sub.Synced != sub.Head {
+			return false
+		}
+	}
+
+	return true
+}
+```
+
+Start the example server and point two clients at the same `-id` and the whole
+of it shows up in the log: prepared once, moved together, and costing the same
+409 bytes each.
+
+```
+[refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
+[refs/heads/printer-7/config] moving -> 30e5ce80… and pushing to 2 subscriber(s)
+[refs/heads/printer-7/config] 2 subscriber(s) synced at 30e5ce80…; that push cost 818 bytes, 2716 sent in total
+```
+
+## Per-ref data, released by the last to leave
 
 The server owns no objects of its own. It asks the `Provider` for a ref's graph
-when a client subscribes to it, and hands it back when the connection ends.
+when the first client subscribes to it, and hands it back once the last one has
+gone — once per ref, however many clients pass through, and never overlapping:
+a `Release` always finishes before that ref can be prepared again.
 
 Give each ref a store of its own and releasing one is nothing more than
 dropping a reference — there is no shared graph to prune. `Release` runs from a
 `defer` in the connection handler, so it fires however the connection ended: a
-clean close, a cancelled context, a broken connection. Only one connection per
-ref is served at a time (`exists` otherwise), which gives prepared data exactly
-one owner.
+clean close, a cancelled context, a broken connection.
 
 ## Connections do not die
 
@@ -445,17 +486,18 @@ ends when one side closes the connection, and not before.
 $ go run ./demo/cmd/server                     # prepares data per ref on connect
 $ go run ./demo/cmd/client -id printer-7       # asks for refs/heads/printer-7/config
 $ go run ./demo/cmd/client -id sensor-3        # asks for its own ref, served independently
+$ go run ./demo/cmd/client -id printer-7       # a second follower of the first ref
 ```
 
 Each ref gets a configuration struct of its own, personalised with the name the
 provider reads out of it, and the server changes `Network.Primary.MTU` a few
-seconds after each subscriber has caught up:
+seconds after every subscriber to that ref has caught up:
 
 ```
 [refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
-[refs/heads/printer-7/config] synced at 35ae729e… after 949 bytes; setting Network.Primary.MTU in 2s
-[refs/heads/printer-7/config] moving -> 30e5ce80… and pushing
-[refs/heads/printer-7/config] synced at 30e5ce80…; that push cost 409 bytes, 1358 sent in total
+[refs/heads/printer-7/config] 1 subscriber(s) synced at 35ae729e… after 949 bytes; setting Network.Primary.MTU in 2s
+[refs/heads/printer-7/config] moving -> 30e5ce80… and pushing to 1 subscriber(s)
+[refs/heads/printer-7/config] 1 subscriber(s) synced at 30e5ce80…; that push cost 409 bytes, 1358 sent in total
 [refs/heads/printer-7/config] subscriber gone; released its config and objects (0 refs held)
 ```
 
