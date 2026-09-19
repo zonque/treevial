@@ -51,7 +51,7 @@ func TestRegisterCarriesTheRefAndState(t *testing.T) {
 
 	ref := "refs/heads/printer-7/config"
 
-	writing(t, func() error { return client.WriteRegister(ref, someHash) })
+	writing(t, func() error { return client.WriteRegister(ref, someHash, "printer-7") })
 
 	msg, err := server.ReadClientMessage()
 	if err != nil {
@@ -69,6 +69,50 @@ func TestRegisterCarriesTheRefAndState(t *testing.T) {
 	}
 }
 
+func TestRegisterCarriesTheNameTheClientGaveItself(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error {
+		return client.WriteRegister("refs/heads/printer-7/config", someHash, "press-hall-a-7")
+	})
+
+	msg, err := server.ReadClientMessage()
+	if err != nil {
+		t.Fatalf("ReadClientMessage: %v", err)
+	}
+
+	if msg.ClientID != "press-hall-a-7" {
+		t.Errorf("client ID %q, want %q", msg.ClientID, "press-hall-a-7")
+	}
+}
+
+func TestRegisterWithoutANameCarriesNone(t *testing.T) {
+	client, server := pair(t)
+
+	// A client that does not name itself sends the same line it always
+	// did, so the field is genuinely optional rather than an empty one.
+	done := make(chan error, 1)
+	go func() {
+		done <- client.WriteRegister("refs/heads/printer-7/config", someHash, "")
+	}()
+
+	msg, err := server.ReadClientMessage()
+	if err != nil {
+		t.Fatalf("ReadClientMessage: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("WriteRegister: %v", err)
+	}
+
+	if msg.ClientID != "" {
+		t.Errorf("client ID %q, want none", msg.ClientID)
+	}
+	// The registration PROTOCOL.md documents, to the byte.
+	if got := client.BytesWritten(); got != 0x52 {
+		t.Errorf("an unnamed registration took %d bytes, want the %d it always took", got, 0x52)
+	}
+}
+
 func TestRegisterCarriesTheRefVerbatim(t *testing.T) {
 	client, server := pair(t)
 
@@ -76,7 +120,7 @@ func TestRegisterCarriesTheRefVerbatim(t *testing.T) {
 	// is acceptable is a separate job from carrying it.
 	ref := "refs/devices/hall-a/row-3/seat-9"
 
-	writing(t, func() error { return client.WriteRegister(ref, plumbing.ZeroHash) })
+	writing(t, func() error { return client.WriteRegister(ref, plumbing.ZeroHash, "") })
 
 	msg, err := server.ReadClientMessage()
 	if err != nil {
@@ -91,7 +135,7 @@ func TestRegisterCarriesTheRefVerbatim(t *testing.T) {
 func TestRegisterCarriesTheZeroHashForAFreshClient(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return client.WriteRegister("refs/heads/printer-7/config", plumbing.ZeroHash) })
+	writing(t, func() error { return client.WriteRegister("refs/heads/printer-7/config", plumbing.ZeroHash, "") })
 
 	msg, err := server.ReadClientMessage()
 	if err != nil {
@@ -269,6 +313,7 @@ func TestMalformedLinesAreRejected(t *testing.T) {
 		"register",
 		"register refs/heads/printer-7/config",
 		"register refs/heads/printer-7/config not-a-hash",
+		"register refs/heads/printer-7/config df0e0e1cd7146ab580338deb67e66bd05d42c1e8 printer-7 extra",
 		"ack",
 		"ack not-a-hash",
 		"greetings refs/heads/printer-7/config",

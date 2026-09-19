@@ -9,7 +9,9 @@
 //
 // Turning a client ID into a head is this program's own convention, and lives
 // nowhere else: the client package subscribes to whatever ref it is given, and
-// the server serves whatever ref it is sent.
+// the server serves whatever ref it is sent. The same ID is also handed to
+// client.WithID, which is a different job — that one is a label the server
+// shows to whoever is running it, and nothing is decided by it.
 package main
 
 import (
@@ -53,7 +55,9 @@ func run(addr, clientID string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	cli, err := client.Dial(ctx, addr)
+	// The ID does two unrelated things here: it names this client to the
+	// server, and this program turns it into the ref it asks for.
+	cli, err := client.Dial(ctx, addr, client.WithID(clientID))
 	if err != nil {
 		return err
 	}
@@ -61,7 +65,7 @@ func run(addr, clientID string) error {
 
 	ref := refFor(clientID)
 
-	log.Printf("subscribing as %q to %s, asking for %s", clientID, addr, ref)
+	log.Printf("subscribing as %q to %s, asking for %s", cli.ID(), addr, ref)
 
 	updates, err := cli.Subscribe(ctx, ref)
 	if err != nil {

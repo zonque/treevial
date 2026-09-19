@@ -19,9 +19,10 @@
 //     without storing it.
 //
 // This package holds what both sides must agree on: what counts as a usable
-// ref, and how the server reports a refusal. How a client decides which ref to
-// ask for is the client's own business — see
-// [github.com/zonque/treevial/client.RefFor].
+// ref, what a client may name itself, and how the server reports a refusal.
+// How a client decides which ref to ask for is the client's own business; the
+// example in demo/cmd/client builds one from an identifier it is given, and
+// that convention lives in that program alone.
 //
 // The wire format is described by PROTOCOL.md in the repository: pkt-line
 // framed messages over a plain TCP connection. Its Go implementation is
@@ -86,6 +87,35 @@ func CodeOf(err error) ErrorCode {
 // MaxRefLength bounds a ref, so a server cannot be handed an unbounded name to
 // key on.
 const MaxRefLength = 512
+
+// MaxClientIDLength bounds the name a client may give itself, so a server
+// cannot be handed an unbounded string to keep for every connection.
+const MaxClientIDLength = 128
+
+// ValidateClientID reports whether id is a usable client identifier.
+//
+// A client names itself so that whoever runs the server can tell its
+// connections apart. The server takes the name verbatim: it derives nothing
+// from it, does not require it to be unique, and never routes on it — a ref is
+// what decides what a client is served. An empty id means the client did not
+// name itself, which is allowed.
+//
+// The rules are only what it takes for the name to survive the wire: it
+// travels as one field of one pkt-line, so no spaces and no control
+// characters, and it is bounded.
+func ValidateClientID(id string) error {
+	if len(id) > MaxClientIDLength {
+		return fmt.Errorf("client ID is %d bytes, limit is %d", len(id), MaxClientIDLength)
+	}
+
+	for _, r := range id {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("client ID %q contains %q", id, r)
+		}
+	}
+
+	return nil
+}
 
 // ValidateRef reports whether ref is a usable git ref name.
 //

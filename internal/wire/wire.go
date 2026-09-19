@@ -54,6 +54,10 @@ type ClientMessage struct {
 	// Ref is the head the client asked for, set on a Register. It is
 	// carried verbatim: what the server makes of it is its own business.
 	Ref string
+	// ClientID is what the client called itself on a Register, or empty if
+	// it did not. Like Ref it is carried verbatim, but unlike Ref nothing
+	// is ever decided by it.
+	ClientID string
 	// Hash is the state the client holds on a Register, or the state it has
 	// reached on an Ack.
 	Hash plumbing.Hash
@@ -150,9 +154,16 @@ func (c *Conn) WriteLine(line string) error {
 }
 
 // WriteRegister opens a subscription to ref, stating which tree the client
-// already holds. The zero hash means it holds nothing.
-func (c *Conn) WriteRegister(ref string, synced plumbing.Hash) error {
-	return c.WriteLine(fmt.Sprintf("register %s %s", ref, synced))
+// already holds and what it calls itself. The zero hash means it holds
+// nothing; an empty id means it did not name itself, in which case the field
+// is left off the line altogether.
+func (c *Conn) WriteRegister(ref string, synced plumbing.Hash, id string) error {
+	line := fmt.Sprintf("register %s %s", ref, synced)
+	if id != "" {
+		line += " " + id
+	}
+
+	return c.WriteLine(line)
 }
 
 // WriteAck confirms that everything up to hash has been interpreted.
@@ -202,7 +213,10 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 
 	switch fields[0] {
 	case "register":
-		if len(fields) != 3 {
+		// The name a client gives itself is the one optional field on
+		// the line, and the last, so an older client's three-field
+		// registration reads exactly as it always did.
+		if len(fields) != 3 && len(fields) != 4 {
 			return ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed register line %q", line)
 		}
 
@@ -211,7 +225,12 @@ func (c *Conn) ReadClientMessage() (ClientMessage, error) {
 			return ClientMessage{}, err
 		}
 
-		return ClientMessage{Type: Register, Ref: fields[1], Hash: hash}, nil
+		msg := ClientMessage{Type: Register, Ref: fields[1], Hash: hash}
+		if len(fields) == 4 {
+			msg.ClientID = fields[3]
+		}
+
+		return msg, nil
 
 	case "ack":
 		if len(fields) != 2 {

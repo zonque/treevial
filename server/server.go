@@ -55,8 +55,13 @@ type Provider interface {
 type Subscription struct {
 	// Ref the subscriber asked for, verbatim.
 	Ref string
+	// ClientID is what the client called itself when it registered, or
+	// empty if it did not name itself. It is a label to recognise a
+	// connection by: the server derives nothing from it, requires nothing
+	// of it, and two subscribers may share one.
+	ClientID string
 	// Addr is where the subscriber connected from, which is what tells two
-	// subscribers of one ref apart.
+	// subscribers of one ref apart even when they are named alike.
 	Addr string
 	// Head is the hash that ref points at. Subscribers of one ref all see
 	// the same head; what differs is how much of it they have taken up.
@@ -71,6 +76,62 @@ type Subscription struct {
 	Sent     int64
 	Received int64
 }
+
+// EventKind says what happened to a subscription.
+type EventKind int
+
+const (
+	// Subscribed is a client joining a ref, once its objects are ready.
+	Subscribed EventKind = iota
+	// Synced is a client acknowledging a head it was pushed. When the
+	// event's Synced equals its Head, that client is up to date.
+	Synced
+	// Unsubscribed is a client's connection ending, however it ended.
+	Unsubscribed
+)
+
+// String implements fmt.Stringer.
+func (k EventKind) String() string {
+	switch k {
+	case Subscribed:
+		return "subscribed"
+	case Synced:
+		return "synced"
+	case Unsubscribed:
+		return "unsubscribed"
+	}
+
+	return "unknown"
+}
+
+// Event is something that happened to one subscription, together with how that
+// subscription stood when it happened.
+type Event struct {
+	Kind EventKind
+	Subscription
+}
+
+// Watcher is told about subscriptions as they come, catch up and go, so that
+// an application can follow them without polling [Server.Subscribers].
+//
+// Observe is called from the goroutine serving that subscriber, with no lock
+// of the server's held: a handler may call back into the server — Subscribers,
+// Head, SetHead — without deadlocking. It is called in order for any one
+// subscriber, and concurrently for different ones, so a handler must be safe
+// to call from several goroutines at once.
+//
+// A handler runs while its subscriber waits, which delays that subscriber's
+// next push and nobody else's. Anything slow belongs on a goroutine of the
+// handler's own.
+type Watcher interface {
+	Observe(Event)
+}
+
+// WatcherFunc lets a plain function be a [Watcher].
+type WatcherFunc func(Event)
+
+// Observe implements Watcher.
+func (f WatcherFunc) Observe(e Event) { f(e) }
 
 // refState is everything the server holds for one ref: the objects behind it,
 // the hash it points at, and the subscribers following it. It outlives any one
@@ -127,10 +188,15 @@ func (st *refState) setHead(hash plumbing.Hash) {
 // hash is enough for the server to work out what it still needs. The objects
 // and the head it is being moved towards belong to the ref, not to it.
 type subscriber struct {
-	ref   string
-	addr  string
-	conn  *wire.Conn
-	state *refState
+	ref      string
+	clientID string
+	addr     string
+	conn     *wire.Conn
+	state    *refState
+	// announced records that a watcher was told about this subscriber, so
+	// that its departure is reported only if its arrival was. It is
+	// touched only by the goroutine serving the connection.
+	announced bool
 	// notify is a signal rather than a queue: a woken subscriber reads the
 	// ref's current head, so a burst of moves cannot leave it at an old one.
 	notify chan struct{}
@@ -148,6 +214,7 @@ func (c *subscriber) snapshot() Subscription {
 	// the byte counts need no locking of their own.
 	return Subscription{
 		Ref:      c.ref,
+		ClientID: c.clientID,
 		Addr:     c.addr,
 		Head:     c.state.currentHead(),
 		Synced:   synced,
@@ -196,6 +263,7 @@ type Server struct {
 	conns   map[*wire.Conn]struct{}
 	lis     net.Listener
 	stopped bool
+	watcher Watcher
 }
 
 // New returns a server that asks provider for each ref's objects.
@@ -205,6 +273,33 @@ func New(provider Provider) *Server {
 		refs:     map[string]*refState{},
 		conns:    map[*wire.Conn]struct{}{},
 	}
+}
+
+// Watch registers w to be told about subscriptions as they come, catch up and
+// go. It replaces any previous watcher, and a nil one turns reporting off.
+//
+// Set it before Serve: a watcher registered while clients are already
+// connected hears about them from their next event on, not retrospectively.
+func (s *Server) Watch(w Watcher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.watcher = w
+}
+
+// report tells the watcher, if there is one, how a subscriber stands now. It
+// is called with no lock held, which is what lets a handler ask the server
+// anything it likes.
+func (s *Server) report(kind EventKind, c *subscriber) {
+	s.mu.Lock()
+	w := s.watcher
+	s.mu.Unlock()
+
+	if w == nil {
+		return
+	}
+
+	w.Observe(Event{Kind: kind, Subscription: c.snapshot()})
 }
 
 // Serve accepts connections on lis until Stop is called.
@@ -388,12 +483,12 @@ func (s *Server) handle(nc net.Conn) {
 // serve registers the client, pushes what it is missing, and then stays put,
 // pushing again every time its ref moves.
 func (s *Server) serve(conn *wire.Conn, addr string) error {
-	ref, synced, err := register(conn)
+	msg, err := register(conn)
 	if err != nil {
 		return err
 	}
 
-	c, err := s.connect(conn, addr, ref, synced)
+	c, err := s.connect(conn, addr, msg)
 	if err != nil {
 		return err
 	}
@@ -416,6 +511,8 @@ func (s *Server) serve(conn *wire.Conn, addr string) error {
 			return err
 		}
 
+		s.report(Synced, c)
+
 		select {
 		case <-c.notify:
 			// However many times the ref moved while this client was
@@ -430,24 +527,30 @@ func (s *Server) serve(conn *wire.Conn, addr string) error {
 
 // register reads the opening message, in which the client names the head it
 // wants and states what it already holds.
-func register(conn *wire.Conn) (string, plumbing.Hash, error) {
+func register(conn *wire.Conn) (wire.ClientMessage, error) {
 	msg, err := conn.ReadClientMessage()
 	if err != nil {
-		return "", plumbing.ZeroHash, err
+		return wire.ClientMessage{}, err
 	}
 
 	if msg.Type != wire.Register {
-		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid,
+		return wire.ClientMessage{}, treevial.Errorf(treevial.CodeInvalid,
 			"first message must be a registration")
 	}
 
 	// The ref is taken as it was sent — the server derives nothing from it
 	// — but it still has to be a ref, since the provider will key on it.
 	if err := treevial.ValidateRef(msg.Ref); err != nil {
-		return "", plumbing.ZeroHash, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+		return wire.ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "%v", err)
 	}
 
-	return msg.Ref, msg.Hash, nil
+	// The name is only ever shown to whoever runs the server, but it is
+	// still checked here rather than trusted: it was sent by the client.
+	if err := treevial.ValidateClientID(msg.ClientID); err != nil {
+		return wire.ClientMessage{}, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+	}
+
+	return msg, nil
 }
 
 // connect joins the subscriber to its ref, preparing that ref's objects if it
@@ -455,15 +558,18 @@ func register(conn *wire.Conn) (string, plumbing.Hash, error) {
 // running waits for that one answer rather than asking for another.
 func (s *Server) connect(
 	conn *wire.Conn,
-	addr, ref string,
-	synced plumbing.Hash,
+	addr string,
+	msg wire.ClientMessage,
 ) (*subscriber, error) {
+	ref := msg.Ref
+
 	c := &subscriber{
-		ref:    ref,
-		addr:   addr,
-		conn:   conn,
-		notify: make(chan struct{}, 1),
-		synced: synced,
+		ref:      ref,
+		clientID: msg.ClientID,
+		addr:     addr,
+		conn:     conn,
+		notify:   make(chan struct{}, 1),
+		synced:   msg.Hash,
 	}
 
 	var first bool
@@ -508,6 +614,9 @@ func (s *Server) connect(
 
 		return nil, err
 	}
+
+	c.announced = true
+	s.report(Subscribed, c)
 
 	return c, nil
 }
@@ -555,6 +664,13 @@ func (s *Server) disconnect(c *subscriber) {
 		st.retiring = true
 	}
 	s.mu.Unlock()
+
+	// Reported here, after the subscriber has stopped being one of the
+	// ref's members and so stopped showing up in Subscribers, but before
+	// the provider is given anything back.
+	if c.announced {
+		s.report(Unsubscribed, c)
+	}
 
 	if !last {
 		return

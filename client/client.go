@@ -62,17 +62,45 @@ type Update struct {
 // subscription, so Subscribe or Resume is called once per Client.
 type Client struct {
 	conn *wire.Conn
+	id   string
 
 	mu  sync.Mutex
 	err error
 }
 
-// Dial connects to a treevial server.
+// Option configures a Client as it is dialled.
+type Option func(*Client)
+
+// WithID gives the client a name of its own, which it sends to the server on
+// the opening message.
+//
+// It is a label for whoever runs the server, so that connections can be told
+// apart in a listing or a log. Nothing is decided by it: the ref is what says
+// what a client is served, the server derives nothing from the name and does
+// not require it to be unique, and a client that does not name itself is
+// served exactly the same.
+func WithID(id string) Option {
+	return func(c *Client) { c.id = id }
+}
+
+// Dial connects to a treevial server. See [WithID] for naming the client.
 //
 // No deadline is ever set on the connection: the server pushes when it has
 // something to say, which may be hours after the last byte, and a deadline
 // would tear down a perfectly good connection in the meantime.
-func Dial(ctx context.Context, addr string) (*Client, error) {
+func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
+	var c Client
+
+	for _, opt := range opts {
+		opt(&c)
+	}
+
+	// Checked before anything is dialled, so an unusable name costs no
+	// connection at all.
+	if err := treevial.ValidateClientID(c.id); err != nil {
+		return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+	}
+
 	dialer := net.Dialer{KeepAlive: keepalivePeriod}
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
@@ -80,7 +108,15 @@ func Dial(ctx context.Context, addr string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{conn: wire.NewConn(conn)}, nil
+	c.conn = wire.NewConn(conn)
+
+	return &c, nil
+}
+
+// ID reports the name this client gave itself, or the empty string if it did
+// not name itself.
+func (c *Client) ID() string {
+	return c.id
 }
 
 // Close hangs up.
@@ -145,7 +181,7 @@ func (c *Client) Resume(
 		return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
 	}
 
-	if err := c.conn.WriteRegister(ref, synced); err != nil {
+	if err := c.conn.WriteRegister(ref, synced, c.id); err != nil {
 		return nil, err
 	}
 

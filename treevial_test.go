@@ -97,3 +97,41 @@ func TestValidateRefRejectsOverlongRefs(t *testing.T) {
 		t.Error("ValidateRef accepted an unbounded ref")
 	}
 }
+
+func TestValidateClientIDAcceptsALabelAClientMightPick(t *testing.T) {
+	for _, id := range []string{
+		"",
+		"printer-7",
+		"hall-a/row-3/seat-9",
+		"11111111-2222-3333-4444-555555555555",
+		"Drucker_Halle-A.7",
+		"ünïcödé-7",
+	} {
+		if err := treevial.ValidateClientID(id); err != nil {
+			t.Errorf("ValidateClientID(%q) = %v, want it accepted", id, err)
+		}
+	}
+}
+
+func TestValidateClientIDRejectsWhatWouldNotSurviveTheLine(t *testing.T) {
+	for _, id := range []string{
+		"printer 7",
+		"printer\n7",
+		"printer\t7",
+		"printer\x007",
+		"printer\x7f",
+	} {
+		if err := treevial.ValidateClientID(id); err == nil {
+			t.Errorf("ValidateClientID(%q) accepted it, want an error", id)
+		}
+	}
+}
+
+func TestValidateClientIDRejectsOverlongIDs(t *testing.T) {
+	id := strings.Repeat("a", treevial.MaxClientIDLength+1)
+
+	if err := treevial.ValidateClientID(id); err == nil {
+		t.Errorf("ValidateClientID accepted %d bytes, want the %d-byte limit enforced",
+			len(id), treevial.MaxClientIDLength)
+	}
+}

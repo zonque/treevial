@@ -28,6 +28,7 @@ import (
 func main() {
 	addr := flag.String("server", "127.0.0.1:9418", "address of the treevial server")
 	ref := flag.String("ref", "", "head to subscribe to, e.g. refs/heads/printer-7/config (required)")
+	id := flag.String("id", "", "name this client reports to the server (optional)")
 	flag.Parse()
 
 	if err := treevial.ValidateRef(*ref); err != nil {
@@ -37,7 +38,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	conn, err := client.Dial(ctx, *addr)
+	// Naming the client is optional; it gives whoever runs the server
+	// something better than an address to recognise this one by.
+	conn, err := client.Dial(ctx, *addr, client.WithID(*id))
 	if err != nil {
 		log.Fatal(err)
 	}

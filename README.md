@@ -30,9 +30,9 @@ go get github.com/zonque/treevial
 | Import | For | Pulls in |
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
+| `github.com/zonque/treevial/client` | `Dial`, `WithID`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription`, `Watch`, `Event` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
@@ -452,9 +452,76 @@ of it shows up in the log: prepared once, moved together, and costing the same
 
 ```
 [refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59090) subscribed
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59090) synced at 35ae729e… (949 B sent, 141 B received)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59104) subscribed
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59104) synced at 35ae729e… (949 B sent, 141 B received)
 [refs/heads/printer-7/config] moving -> 30e5ce80… and pushing to 2 subscriber(s)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59090) synced at 30e5ce80… (1358 B sent, 190 B received)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:59104) synced at 30e5ce80… (1358 B sent, 190 B received)
 [refs/heads/printer-7/config] 2 subscriber(s) synced at 30e5ce80…; that push cost 818 bytes, 2716 sent in total
 ```
+
+Both clients called themselves `printer-7` — the server is happy to have two of
+them, and the address is what tells them apart.
+
+## Watching who is connected
+
+`Subscribers` answers *who is connected now*: one entry per connection, with
+the ref it follows, the name it gave itself, where it connected from, where
+that ref points, how far it has got, and what it has cost.
+
+```go
+for _, sub := range srv.Subscribers() {
+	log.Printf("%-16s %-22s %s  synced %s  %d B sent",
+		sub.ClientID, sub.Addr, sub.Head, sub.Synced, sub.Sent)
+}
+```
+
+`Watch` answers *tell me when that changes*, so nothing has to poll for it:
+
+```go
+srv.Watch(server.WatcherFunc(func(e server.Event) {
+	log.Printf("[%s] %s %s at %s", e.Ref, e.ClientID, e.Kind, e.Synced)
+}))
+```
+
+There are three kinds. `Subscribed` is a client joining a ref, once that ref's
+objects are ready. `Synced` is a client acknowledging a head it was pushed —
+when the event's `Synced` equals its `Head`, that client is up to date.
+`Unsubscribed` is a connection ending, however it ended.
+
+What a handler may rely on:
+
+- It runs on the goroutine serving that subscriber, with no lock of the
+  server's held, so it may call `Subscribers`, `Head` or `SetHead` without
+  deadlocking. Reacting to "everyone has caught up" by moving the ref again is
+  the obvious thing to do from one, and it works.
+- It is called in order for any one subscriber, and concurrently for different
+  ones, so it must be safe to call from several goroutines at once.
+- It runs while its subscriber waits, which delays that subscriber's next push
+  and nobody else's. Anything slow belongs on a goroutine of the handler's own.
+- By the time `Unsubscribed` arrives, that subscriber is already gone from
+  `Subscribers`.
+
+The example server keeps no state of its own about who is connected: every
+line it prints and every rebuild it sets off comes from an event.
+
+### A client may name itself
+
+`WithID` gives a client a name it sends on its opening message, which is what
+turns a listing of addresses into a listing of things:
+
+```go
+conn, err := client.Dial(ctx, addr, client.WithID("press-hall-a-7"))
+```
+
+It is a label and nothing more. The ref is what decides what a client is
+served; the server derives nothing from the name, does not require it to be
+unique, and serves a client that sends none exactly the same. It travels as one
+field of one line, so it may not contain spaces or control characters and is
+bounded at 128 bytes — `treevial.ValidateClientID` is the rule, applied by the
+client before dialling and by the server on what arrives.
 
 ## Per-ref data, released by the last to leave
 
@@ -484,7 +551,7 @@ ends when one side closes the connection, and not before.
 
 ```console
 $ go run ./demo/cmd/server                     # prepares data per ref on connect
-$ go run ./demo/cmd/client -id printer-7       # asks for refs/heads/printer-7/config
+$ go run ./demo/cmd/client -id printer-7       # names itself, asks for refs/heads/printer-7/config
 $ go run ./demo/cmd/client -id sensor-3        # asks for its own ref, served independently
 $ go run ./demo/cmd/client -id printer-7       # a second follower of the first ref
 ```
@@ -495,9 +562,13 @@ seconds after every subscriber to that ref has caught up:
 
 ```
 [refs/heads/printer-7/config] prepared -> 35ae729e…, 11 leaves walked from the struct (1 refs held)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:55862) subscribed
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:55862) synced at 35ae729e… (949 B sent, 141 B received)
 [refs/heads/printer-7/config] 1 subscriber(s) synced at 35ae729e… after 949 bytes; setting Network.Primary.MTU in 2s
 [refs/heads/printer-7/config] moving -> 30e5ce80… and pushing to 1 subscriber(s)
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:55862) synced at 30e5ce80… (1358 B sent, 190 B received)
 [refs/heads/printer-7/config] 1 subscriber(s) synced at 30e5ce80…; that push cost 409 bytes, 1358 sent in total
+[refs/heads/printer-7/config] printer-7 (127.0.0.1:55862) unsubscribed
 [refs/heads/printer-7/config] subscriber gone; released its config and objects (0 refs held)
 ```
 

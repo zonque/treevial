@@ -27,7 +27,7 @@ Hashes travel as 40 lowercase hexadecimal digits. Forty zeros mean "no hash".
 ### Client to server
 
 ```
-register <ref> <synced>
+register <ref> <synced> [<client-id>]
 ack <hash>
 ```
 
@@ -49,6 +49,15 @@ convention lives in that program alone; another client may ask for
 `<synced>` is the tree the client already holds in full, or forty zeros if it
 holds nothing. Holding a tree means holding everything beneath it, so this one
 hash is the whole of the client's state.
+
+`<client-id>` is optional and last: a name the client gives itself so that
+whoever runs the server can tell its connections apart. The server takes it
+verbatim, derives nothing from it, requires nothing of it and never routes on
+it — two clients may send the same name, and a client that sends none is
+served exactly the same. Because it is one field of one line it may not contain
+spaces or control characters, and it is at most 128 bytes. A client that does
+not name itself leaves the field off, so its registration is byte for byte the
+one it always sent.
 
 `ack` confirms that everything up to `<hash>` has been interpreted. Until it
 arrives the server considers the client behind, and will not push again.
@@ -102,6 +111,10 @@ server → 015f<347 bytes of pack>
 server → 0000
 client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
 ```
+
+Had that client named itself `printer-7`, its first line would read
+`005cregister refs/heads/printer-7/config 0000…0000 printer-7` — the same line
+with one more field — and nothing else about the exchange would differ.
 
 Seventeen objects the first time and four the second, because the four are all
 that moved: the second pack is 347 bytes against 886. Counting the lines in

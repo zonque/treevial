@@ -529,7 +529,7 @@ func TestServerRefusesARefItCannotUse(t *testing.T) {
 
 		conn := wire.NewConn(nc)
 
-		if err := conn.WriteRegister(ref, plumbing.ZeroHash); err != nil {
+		if err := conn.WriteRegister(ref, plumbing.ZeroHash, ""); err != nil {
 			t.Fatalf("WriteRegister: %v", err)
 		}
 
@@ -561,7 +561,7 @@ func TestServerServesAnyWellFormedRefItIsGiven(t *testing.T) {
 
 	conn := wire.NewConn(nc)
 
-	if err := conn.WriteRegister(ref, plumbing.ZeroHash); err != nil {
+	if err := conn.WriteRegister(ref, plumbing.ZeroHash, ""); err != nil {
 		t.Fatalf("WriteRegister: %v", err)
 	}
 

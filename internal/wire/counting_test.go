@@ -26,7 +26,7 @@ func TestConnCountsWhatAMessageCostOnTheWire(t *testing.T) {
 	client, server := pair(t)
 
 	done := make(chan error, 1)
-	go func() { done <- client.WriteRegister("refs/heads/printer-7/config", someHash) }()
+	go func() { done <- client.WriteRegister("refs/heads/printer-7/config", someHash, "") }()
 
 	if _, err := server.ReadClientMessage(); err != nil {
 		t.Fatalf("ReadClientMessage: %v", err)
