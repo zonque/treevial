@@ -106,41 +106,32 @@ type Config struct {
 
 A map's keys must be strings, since they become path elements, and a key may be
 neither empty nor contain a slash — either would invent nesting the value does
-not have. A map keyed by anything else is reported as an error unless tagged as
-a leaf. Keys are walked in sorted order, so neither the tree nor `Walk` depends
-on Go's random map order. A slice's children are named by index, and decoding
-reads them as numbers rather than as text, so order survives past ten elements.
-A nil or empty map, or a slice that would have been a subtree, contributes
-nothing — like a struct with nothing in it. A nil or empty slice of *scalars* is
-a leaf like any other, since `nil` and `[]` are worth telling apart.
+not have. A map keyed by anything else is reported as an error, unless it is
+tagged as a leaf, which is how you ask for it in one blob. Keys are walked in
+sorted order, so neither the tree nor `Walk` depends on Go's random map order.
+A slice's children are named by index, and decoding reads them back as numbers
+rather than as text, so order survives past ten elements. A nil or empty map, or
+a slice that would have been a subtree, contributes nothing — like a struct with
+nothing in it. A nil or empty slice of *scalars* is a leaf like any other, since
+`nil` and `[]` are worth telling apart.
 
-**Why slices of messages nest, and not just for granularity.** A leaf that is
-not itself a message but merely contains some is encoded as JSON, and JSON
-cannot put a protobuf `oneof` back together — it writes the wrapper the
-generated code uses and then has nothing to unmarshal it into. Giving each
-message a blob of its own gets it the wire encoding it deserves. For the same
-reason an interface counts as scalar and a message inside one is refused, since
-nothing on the far side would say which message to expect.
+**Why a run of messages nests, and not just for granularity.** A protobuf
+message stored on its own goes as its own wire bytes; one buried inside a leaf
+would go as JSON, which writes a `oneof` as the wrapper the generated code uses
+and then has nothing to unmarshal it back into. So a leaf that merely contains
+a message is refused when the tree is built, rather than written and found
+unreadable later: leave it untagged and each message gets a blob of its own, or
+give the `Mapper` an `Encode` and `Decode` that know what to do with it. A
+message held in an interface is refused for the same reason — nothing on the far
+side would say which message to expect.
 
-Keys must be strings, since they become path elements, and a key may be neither
-empty nor contain a slash — either would invent nesting the value does not have.
-A map keyed by anything else has nothing to offer a path and is reported as an
-error, unless it is tagged as a leaf, which is how you ask for it in one blob.
-Keys are walked in sorted order, so neither the tree nor `Walk` depends on Go's
-random map order. A nil or empty map contributes nothing, like a struct with
-nothing in it.
-
-One limitation worth knowing: Go has no address for a map element, so a
-`Builder` can only be told that a whole map changed (`b.Build(&cfg.Limits)`),
-which recomputes its entries.
-
-That fallback has one blind spot, and it is worth knowing before it bites: **a
-`time.Time` is a struct, is not a protobuf message, and has
-only unexported fields**, so the walker descends into it, finds nothing it may
-read, and the field vanishes from the tree entirely. Tag it and it is stored
-whole — JSON already knows how to write a time, so no encoding of your own is
-needed. Any struct of that shape needs the same treatment, and `Graph.Listing`
-will show you what actually became a blob.
+The default rule has one blind spot, worth knowing before it bites: **a
+`time.Time` is a struct, is not a protobuf message, and has only unexported
+fields**, so the walker descends into it, finds nothing it may read, and the
+field vanishes from the tree entirely. Tag it and it is stored whole — JSON
+already knows how to write a time, so no encoding of your own is needed. Any
+struct of that shape needs the same treatment, and `Graph.Listing` will show you
+what actually became a blob.
 
 For types you do not own, and so cannot tag, a `Mapper` carries a rule of your
 own:
@@ -253,13 +244,14 @@ root, err = b.Build(&cfg.Network.Primary.MTU) // that leaf and the trees above i
 ```
 
 **A pointer stands for everything beneath it**, so one rule covers a field, a
-subtree, an entry of a map, and the whole value:
+subtree, an entry of a map, an element of a slice, and the whole value:
 
 | argument | recomputed |
 |---|---|
 | `&cfg.Network.Primary.MTU` | that leaf, and the trees above it |
 | `&cfg.Network` | every leaf under `Network` |
 | `cfg.Ports["eth0"]` | that entry of the map |
+| `&cfg.Delays[1]` | that element of the slice |
 | `cfg` | everything — the wildcard |
 | *(none)* | everything |
 

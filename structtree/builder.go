@@ -24,7 +24,7 @@ import (
 //
 // Say what changed by passing a pointer to it. A pointer stands for everything
 // beneath it, so the same rule covers one field, a subtree, an entry of a map,
-// and the whole value:
+// an element of a slice, and the whole value:
 //
 //	b, err := structtree.NewBuilder(store, cfg)
 //	root, err := b.Build()                          // everything, the first time
@@ -33,6 +33,7 @@ import (
 //	root, err = b.Build(&cfg.Network.Primary.MTU)   // that leaf and its path
 //	root, err = b.Build(&cfg.Network)               // everything under Network
 //	root, err = b.Build(cfg.Ports["eth0"])          // one entry of a map
+//	root, err = b.Build(&cfg.Delays[1])             // one element of a slice
 //	root, err = b.Build(cfg)                        // everything
 //	root, err = b.Build()                           // everything
 //

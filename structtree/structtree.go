@@ -38,21 +38,23 @@
 //     per element, named by index. A run of scalars stays one blob, since
 //     splitting a []byte into a blob apiece would serve nobody.
 //
-// The slice rule is not only about granularity. A leaf that is not itself a
-// message but merely contains some is encoded as JSON, and JSON cannot put a
-// protobuf oneof back together: it writes the wrapper the generated code uses
-// and then has nothing to unmarshal it into. Making such a slice a subtree
-// gives each message a blob of its own and the wire encoding it deserves.
+// The slice rule is not only about granularity. A message stored on its own
+// goes as its own wire bytes; one buried inside a leaf would go as JSON, which
+// writes a oneof as the wrapper the generated code uses and then has nothing to
+// unmarshal it back into. So a leaf that merely contains a message is refused
+// when the tree is built, rather than written and found unreadable later: leave
+// it untagged and each message gets a blob of its own, or give a [Mapper] an
+// Encode and Decode that know what to do with it.
 //
 // An interface is treated as scalar, since what it holds is not known from the
-// type. A protobuf message in one is refused rather than written, because
-// nothing on the far side would say which message to unmarshal.
+// type. A protobuf message in one is refused for the same reason: nothing on
+// the far side would say which message to unmarshal.
 //
-// That fallback matters most for what it gets wrong. A time.Time is a struct,
-// is not a protobuf message, and has only unexported fields — so the walker
-// descends into it, finds nothing it may read, and the field vanishes from the
-// tree. Tag it and it is stored whole. Any struct of that shape needs the same
-// treatment, and the tag is how to give it.
+// The default rule matters most for what it gets wrong. A time.Time is a
+// struct, is not a protobuf message, and has only unexported fields — so the
+// walker descends into it, finds nothing it may read, and the field vanishes
+// from the tree. Tag it and it is stored whole. Any struct of that shape needs
+// the same treatment, and the tag is how to give it.
 //
 // For types you do not own, and so cannot tag, a [Mapper] carries a rule of
 // your own alongside the encoding that serves it.
