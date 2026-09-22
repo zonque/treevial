@@ -32,7 +32,7 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription`, `Watch`, `Event` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
@@ -551,6 +551,54 @@ unique, and serves a client that sends none exactly the same. It travels as one
 field of one line, so it may not contain spaces or control characters and is
 bounded at 128 bytes — `treevial.ValidateClientID` is the rule, applied by the
 client before dialling and by the server on what arrives.
+
+## Serving a ref this server does not own
+
+In a cluster, the node a client happens to be connected to may not be the one
+that owns the ref it is following — and which node that is can change while the
+client sits there. A `Forwarder` fetches the objects from wherever they are and
+the server writes them on as ordinary updates. **The client is told nothing and
+notices nothing**: no redirect, no reconnect, no protocol change. Its connection
+is as stable as the cluster is not.
+
+```go
+srv.Forward(server.ForwarderFunc(func(ctx context.Context, req server.Push) (*server.Pack, error) {
+	if weOwn(req.Ref) {
+		return nil, nil            // served from this server's own store
+	}
+
+	// Ask whoever does. req.Have is what this subscriber has
+	// acknowledged and req.Want the head it should reach, so the
+	// answer is that subscriber's delta and no more.
+	count, body, err := leader.Objects(ctx, req.Ref, req.Have, req.Want)
+	if err != nil {
+		return nil, err
+	}
+
+	return &server.Pack{Objects: count, Body: body}, nil
+}))
+```
+
+It is asked **for every push, not once per connection**, which is the point: a
+re-election between two pushes takes effect on the second one, on the
+connection that is already open. The `ctx` is that client's, cancelled when it
+hangs up, so a fetch is not left outstanding for somebody who has gone. An
+error is reported to the client as a refusal — a `*treevial.Error` with
+whatever code the forwarder chose, anything else as `internal`.
+
+Two things stay with the application, deliberately. **How the servers talk to
+each other** is not treevial's business: the leader answers such a fetch with
+`store.SelectSince` and `store.EncodePack`, over whatever transport the cluster
+already has. And **moving the ref** is still `SetHead` — a server that owns
+nothing still learns from its consensus layer that a ref has moved, and says
+so. A forwarder alone pushes nothing, because nothing has told the server there
+is anything to push.
+
+One consequence worth knowing before building on it: a forwarded push asks the
+owning node for the delta from a hash this client acknowledged, possibly long
+ago. Whether that node still holds it is a retention question, and the answer
+decides whether the client is served incrementally or has to be resynchronised
+whole.
 
 ## Per-ref data, released by the last to leave
 
