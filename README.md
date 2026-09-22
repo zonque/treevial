@@ -30,8 +30,8 @@ go get github.com/zonque/treevial
 | Import | For | Pulls in |
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `WithID`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
-| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince` | client repositories |
+| `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
+| `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
 | `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription`, `Watch`, `Event` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
@@ -213,6 +213,43 @@ the value at `old`.** The hashes say what moved between the two trees, not what
 `dst` contains. Passing `plumbing.ZeroHash` as `old` decodes everything and is
 always safe, and a baseline the source cannot resolve degrades to that rather
 than silently skipping work.
+
+### What the graph keeps
+
+A `Graph` accumulates, which is what makes an incremental push work at all: the
+four objects a one-field change sends resolve against the rest of the tree,
+which arrived earlier. Nothing is dropped on its own account, though, so the
+superseded objects stay too. A thousand one-field moves leaves a graph holding
+**4013 objects of which 17 are live** — the cost is small per push and
+unbounded over a long run.
+
+`WithHistory` hands that to the client:
+
+```go
+conn, err := client.Dial(ctx, addr, client.WithHistory(1))
+```
+
+The graph is then swept as each update arrives, keeping the `n` states behind
+the one arriving. One is the usual answer: that is the baseline `ApplySince`,
+`Diff` and `ListingSince` are asked about, so updates still cost only what
+moved, and the graph settles at two states rather than growing with every push.
+Ask for more only if you compare against something older than the update's own
+`Previous`.
+
+Sweeping by hand is the same thing without the option, for a caller who knows
+better than a fixed number which states are worth keeping:
+
+```go
+dropped, err := u.Graph.Retain(u.Previous, u.Hash)   // and Graph.Len to watch it
+```
+
+Either way a dropped state costs work rather than correctness: an `ApplySince`
+whose baseline is gone decodes everything instead of skipping what did not move.
+
+The server side has no equivalent yet. A `Store` keeps every object it is ever
+given, and it has to keep more than the client does — a subscriber sitting three
+moves behind still needs the tree it is standing on, so the live set there is
+the head plus every subscriber's `Synced`.
 
 The round trip is exact: `TestClientRebuildsTheStructTheServerPublished`
 decodes a received tree into the struct, rebuilds a tree from it, and requires

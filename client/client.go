@@ -63,6 +63,11 @@ type Update struct {
 type Client struct {
 	conn *wire.Conn
 	id   string
+	// history is how many states the graph is asked to keep, and sweeping
+	// says whether it was asked at all: without the option a graph keeps
+	// everything it is ever sent, which is not the same as keeping none.
+	history  int
+	sweeping bool
 
 	mu  sync.Mutex
 	err error
@@ -83,6 +88,33 @@ func WithID(id string) Option {
 	return func(c *Client) { c.id = id }
 }
 
+// WithHistory has the client sweep its graph as each update arrives, keeping
+// only the n most recent states.
+//
+// A graph accumulates: an update carries only what moved, so the objects it
+// already holds are what the new ones resolve against. Nothing is dropped on
+// its own account, which over a long-lived subscription means every state the
+// client was ever pushed is still in memory — on the example's configuration,
+// four objects a push, for as long as the process runs.
+//
+// n counts the states kept behind the one arriving, and one is the usual
+// answer: that is the baseline [structtree.ApplySince], Graph.Diff and
+// Graph.ListingSince are asked about, so an update still costs only what
+// moved. Ask for more if you compare against older states than the update's
+// own Previous. Without this option nothing is ever dropped.
+//
+// The sweep happens as the next update arrives, just before its objects are
+// interpreted — the one moment the graph is written to in any case. A caller
+// that asks for this should leave [github.com/zonque/treevial/receive.Graph.Retain]
+// alone: if a sweep cannot resolve a state it was keeping, the subscription
+// ends with that error rather than quietly growing again.
+func WithHistory(n int) Option {
+	return func(c *Client) {
+		c.history = n
+		c.sweeping = true
+	}
+}
+
 // Dial connects to a treevial server. See [WithID] for naming the client.
 //
 // No deadline is ever set on the connection: the server pushes when it has
@@ -95,10 +127,16 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		opt(&c)
 	}
 
-	// Checked before anything is dialled, so an unusable name costs no
+	// Checked before anything is dialled, so an unusable option costs no
 	// connection at all.
 	if err := treevial.ValidateClientID(c.id); err != nil {
 		return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+	}
+
+	if c.sweeping && c.history < 1 {
+		return nil, treevial.Errorf(treevial.CodeInvalid,
+			"a history of %d states keeps nothing to decode against; leave the option off to keep everything",
+			c.history)
 	}
 
 	dialer := net.Dialer{KeepAlive: keepalivePeriod}
@@ -222,6 +260,13 @@ func (c *Client) consume(
 ) error {
 	previous := synced
 
+	// heads are the states the graph is asked to keep, newest last. It is
+	// only used when the caller asked for the graph to be swept.
+	var heads []plumbing.Hash
+	if c.sweeping && !synced.IsZero() {
+		heads = append(heads, synced)
+	}
+
 	for {
 		// Counted from before the update message is read to after its
 		// pack has been drained, so the figure is the bytes that
@@ -235,6 +280,16 @@ func (c *Client) consume(
 			}
 
 			return err
+		}
+
+		// Swept here, with an update in hand but before a byte of it
+		// has been interpreted: the graph is about to be written to in
+		// any case, so nothing is dropped while a caller might still
+		// be reading what it was handed last.
+		if c.sweeping {
+			if err := sweep(graph, heads); err != nil {
+				return err
+			}
 		}
 
 		// The pack reader ends at the marker closing the update, so it
@@ -276,5 +331,28 @@ func (c *Client) consume(
 		}
 
 		previous = msg.Hash
+
+		if c.sweeping && (len(heads) == 0 || heads[len(heads)-1] != msg.Hash) {
+			heads = append(heads, msg.Hash)
+			if len(heads) > c.history {
+				heads = heads[len(heads)-c.history:]
+			}
+		}
 	}
+}
+
+// sweep drops from the graph everything the states named in heads cannot
+// reach. A graph it cannot resolve is one something else has taken objects
+// out of, and carrying on would mean growing without bound, which is the one
+// thing the caller asked not to happen.
+func sweep(graph *receive.Graph, heads []plumbing.Hash) error {
+	if len(heads) == 0 {
+		return nil
+	}
+
+	if _, err := graph.Retain(heads...); err != nil {
+		return err
+	}
+
+	return nil
 }

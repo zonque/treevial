@@ -57,7 +57,14 @@ func run(addr, clientID string) error {
 
 	// The ID does two unrelated things here: it names this client to the
 	// server, and this program turns it into the ref it asks for.
-	cli, err := client.Dial(ctx, addr, client.WithID(clientID))
+	//
+	// WithHistory keeps the graph from growing for as long as the process
+	// runs: one state behind the arriving one is what ApplySince and the
+	// changeset below are measured against, and older ones are dropped.
+	cli, err := client.Dial(ctx, addr,
+		client.WithID(clientID),
+		client.WithHistory(1),
+	)
 	if err != nil {
 		return err
 	}

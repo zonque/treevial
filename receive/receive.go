@@ -12,6 +12,8 @@
 //   - [Graph.Listing] renders a whole tree the way "git ls-tree -r -t" would,
 //     and [Graph.ListingSince] renders only what moved between two, in the
 //     same format.
+//   - [Graph.Retain] drops the states it has been pushed and no longer needs,
+//     and [Graph.Len] says how much it is holding.
 package receive
 
 import (
