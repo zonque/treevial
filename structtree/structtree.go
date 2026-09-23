@@ -84,7 +84,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -173,7 +173,8 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 		value := v.Field(i)
 
 		if m.isLeaf(field) {
-			if err := m.unusableMap(field); err != nil {
+			inner, err := m.leafValue(field, value)
+			if err != nil {
 				if *failure == nil {
 					*failure = fmt.Errorf("structtree: %s: %w", path, err)
 				}
@@ -181,24 +182,7 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 				continue
 			}
 
-			inner, ok := deref(value)
-			if !ok {
-				continue
-			}
-
-			if err := unreadableLeaf(field, inner); err != nil {
-				if *failure == nil {
-					*failure = fmt.Errorf("structtree: %s: %w", path, err)
-				}
-
-				continue
-			}
-
-			if err := m.unreadableBlob(field, inner.Type()); err != nil {
-				if *failure == nil {
-					*failure = fmt.Errorf("structtree: %s: %w", path, err)
-				}
-
+			if !inner.IsValid() {
 				continue
 			}
 
@@ -215,6 +199,37 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 	}
 
 	return true
+}
+
+// leafValue resolves a leaf field to the value its blob is written from,
+// refusing a field that cannot be stored usefully: a map no path can address,
+// or a value the default encoding would write and then be unable to read back
+// again. The three rules are distinct — addressability, interface erasure, and
+// what the encoder can carry — and none subsumes another; gathering them here
+// is only so that a caller has one failure to report rather than three.
+//
+// An invalid value with a nil error means there is nothing to store at all: a
+// nil pointer, which reads as a deletion rather than as a failure.
+func (m Mapper) leafValue(field reflect.StructField, value reflect.Value) (reflect.Value, error) {
+	// Asked before the dereference, so it still fires for a nil map.
+	if err := m.unusableMap(field); err != nil {
+		return reflect.Value{}, err
+	}
+
+	inner, ok := deref(value)
+	if !ok {
+		return reflect.Value{}, nil
+	}
+
+	if err := unreadableLeaf(field, inner); err != nil {
+		return reflect.Value{}, err
+	}
+
+	if err := m.unreadableBlob(field, inner.Type()); err != nil {
+		return reflect.Value{}, err
+	}
+
+	return inner, nil
 }
 
 // walkMap yields the leaves of a map, one subtree per key. Keys are sorted, so
@@ -238,7 +253,7 @@ func (m Mapper) walkMap(v reflect.Value, prefix string, yield func(Leaf) bool, f
 	for _, key := range v.MapKeys() {
 		keys = append(keys, key.String())
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	elem := reflect.StructField{Type: v.Type().Elem()}
 
@@ -545,7 +560,9 @@ func (n *node) put(name string, child *node) {
 	n.order = append(n.order, name)
 }
 
-// store writes the node and everything beneath it, returning the tree hash.
+// store writes the node and everything beneath it, returning the tree hash and
+// recording it on the node. A Builder reads those hashes back when it rebuilds
+// the trees above a change; a plain Build discards the nodes and ignores them.
 func (n *node) store(s *objects.Store) (plumbing.Hash, error) {
 	entries := make([]object.TreeEntry, 0, len(n.order))
 
@@ -570,5 +587,12 @@ func (n *node) store(s *objects.Store) (plumbing.Hash, error) {
 		entries = append(entries, object.TreeEntry{Name: name, Mode: filemode.Dir, Hash: hash})
 	}
 
-	return s.AddTree(entries)
+	hash, err := s.AddTree(entries)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	n.tree = hash
+
+	return hash, nil
 }

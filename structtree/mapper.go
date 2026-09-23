@@ -191,8 +191,8 @@ func containsMessage(t reflect.Type, seen map[reflect.Type]bool) bool {
 
 	switch t.Kind() {
 	case reflect.Struct:
-		for i := range t.NumField() {
-			if containsMessage(t.Field(i).Type, seen) {
+		for field := range t.Fields() {
+			if containsMessage(field.Type, seen) {
 				return true
 			}
 		}

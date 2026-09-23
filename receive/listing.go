@@ -37,9 +37,9 @@ func (g *Graph) Listing(root plumbing.Hash) (string, error) {
 }
 
 func (g *Graph) listing(h plumbing.Hash, prefix string, b *strings.Builder) error {
-	entries, ok := g.trees[h]
-	if !ok {
-		return fmt.Errorf("tree %s missing from graph", h)
+	entries, err := g.entries(h)
+	if err != nil {
+		return err
 	}
 
 	for _, e := range entries {
@@ -174,9 +174,9 @@ func (g *Graph) whole(e object.TreeEntry, path string, kind ChangeKind, b *strin
 		return nil
 	}
 
-	entries, ok := g.trees[e.Hash]
-	if !ok {
-		return fmt.Errorf("tree %s missing from graph", e.Hash)
+	entries, err := g.entries(e.Hash)
+	if err != nil {
+		return err
 	}
 
 	for _, child := range entries {

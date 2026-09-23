@@ -70,6 +70,28 @@ func (g *Graph) Tree(h plumbing.Hash) ([]object.TreeEntry, bool) {
 	return entries, ok
 }
 
+// entries is Tree for the callers that treat a gap as an error rather than as
+// an answer, so that every one of them reports it the same way.
+func (g *Graph) entries(h plumbing.Hash) ([]object.TreeEntry, error) {
+	entries, ok := g.trees[h]
+	if !ok {
+		return nil, fmt.Errorf("tree %s missing from graph", h)
+	}
+
+	return entries, nil
+}
+
+// content is Blob for those same callers. The path is carried only so the
+// message can say where the gap was found.
+func (g *Graph) content(h plumbing.Hash, path string) ([]byte, error) {
+	content, ok := g.blobs[h]
+	if !ok {
+		return nil, fmt.Errorf("blob %s (%s) missing from graph", h, path)
+	}
+
+	return content, nil
+}
+
 // Len reports how many objects the graph is holding, live or superseded. It is
 // what a long-running client watches to see whether [Graph.Retain] is keeping
 // up with what it is being sent.
@@ -135,9 +157,9 @@ func (g *Graph) mark(h plumbing.Hash, prefix string, live map[plumbing.Hash]bool
 		return nil
 	}
 
-	entries, ok := g.trees[h]
-	if !ok {
-		return fmt.Errorf("tree %s missing from graph", h)
+	entries, err := g.entries(h)
+	if err != nil {
+		return err
 	}
 
 	live[h] = true
@@ -153,8 +175,8 @@ func (g *Graph) mark(h plumbing.Hash, prefix string, live map[plumbing.Hash]bool
 			continue
 		}
 
-		if _, ok := g.blobs[e.Hash]; !ok {
-			return fmt.Errorf("blob %s (%s) missing from graph", e.Hash, path)
+		if _, err := g.content(e.Hash, path); err != nil {
+			return err
 		}
 
 		live[e.Hash] = true
@@ -176,9 +198,9 @@ func (g *Graph) Leaves(root plumbing.Hash) (map[string][]byte, error) {
 }
 
 func (g *Graph) walk(h plumbing.Hash, prefix string, out map[string][]byte) error {
-	entries, ok := g.trees[h]
-	if !ok {
-		return fmt.Errorf("tree %s missing from graph", h)
+	entries, err := g.entries(h)
+	if err != nil {
+		return err
 	}
 
 	for _, e := range entries {
@@ -192,9 +214,9 @@ func (g *Graph) walk(h plumbing.Hash, prefix string, out map[string][]byte) erro
 			continue
 		}
 
-		content, ok := g.blobs[e.Hash]
-		if !ok {
-			return fmt.Errorf("blob %s (%s) missing from graph", e.Hash, path)
+		content, err := g.content(e.Hash, path)
+		if err != nil {
+			return err
 		}
 		out[path] = content
 	}

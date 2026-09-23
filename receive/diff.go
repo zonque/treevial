@@ -2,7 +2,8 @@ package receive
 
 import (
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -76,7 +77,7 @@ func (g *Graph) Diff(old, new plumbing.Hash) ([]Change, error) {
 		return nil, err
 	}
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	slices.SortFunc(out, func(a, b Change) int { return strings.Compare(a.Path, b.Path) })
 
 	return out, nil
 }
@@ -156,9 +157,9 @@ func (g *Graph) report(kind ChangeKind, e object.TreeEntry, path string, out *[]
 		change := Change{Kind: kind, Path: path, Hash: e.Hash}
 
 		if kind != Deleted {
-			content, ok := g.blobs[e.Hash]
-			if !ok {
-				return fmt.Errorf("blob %s (%s) missing from graph", e.Hash, path)
+			content, err := g.content(e.Hash, path)
+			if err != nil {
+				return err
 			}
 			change.Content = content
 		}
@@ -192,9 +193,9 @@ func (g *Graph) entriesByName(h plumbing.Hash) (map[string]object.TreeEntry, err
 		return map[string]object.TreeEntry{}, nil
 	}
 
-	entries, ok := g.trees[h]
-	if !ok {
-		return nil, fmt.Errorf("tree %s missing from graph", h)
+	entries, err := g.entries(h)
+	if err != nil {
+		return nil, err
 	}
 
 	out := make(map[string]object.TreeEntry, len(entries))

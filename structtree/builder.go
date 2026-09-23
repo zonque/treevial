@@ -3,6 +3,7 @@ package structtree
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -128,11 +129,9 @@ func (b *Builder) Build(changed ...any) (plumbing.Hash, error) {
 		return plumbing.ZeroHash, err
 	}
 
-	for _, path := range declared {
-		// The whole value was declared, so there is nothing to spare.
-		if path == "" {
-			return b.buildAll()
-		}
+	// The whole value was declared, so there is nothing to spare.
+	if slices.Contains(declared, "") {
+		return b.buildAll()
 	}
 
 	for _, path := range declared {
@@ -179,7 +178,7 @@ func (b *Builder) buildAll() (plumbing.Hash, error) {
 	b.fields = map[string]reflect.StructField{}
 	b.indexValue(reflect.ValueOf(b.value), "")
 
-	return b.storeSubtree(root, "")
+	return root.store(b.store)
 }
 
 // blob encodes a leaf and stores it.
@@ -261,7 +260,7 @@ func (b *Builder) refresh(path string) error {
 		return err
 	}
 
-	if _, err := b.storeSubtree(fresh, path); err != nil {
+	if _, err := fresh.store(b.store); err != nil {
 		return err
 	}
 
@@ -270,47 +269,6 @@ func (b *Builder) refresh(path string) error {
 	b.indexValue(value, path)
 
 	return nil
-}
-
-// storeSubtree writes a node and everything beneath it, recording each hash on
-// the node that owns it.
-func (b *Builder) storeSubtree(n *node, path string) (plumbing.Hash, error) {
-	entries := make([]object.TreeEntry, 0, len(n.order))
-
-	for _, name := range n.order {
-		child := n.children[name]
-
-		if child.blob != plumbing.ZeroHash {
-			entries = append(entries, object.TreeEntry{
-				Name: name,
-				Mode: filemode.Regular,
-				Hash: child.blob,
-			})
-
-			continue
-		}
-
-		childPath := name
-		if path != "" {
-			childPath = path + "/" + name
-		}
-
-		hash, err := b.storeSubtree(child, childPath)
-		if err != nil {
-			return plumbing.ZeroHash, err
-		}
-
-		entries = append(entries, object.TreeEntry{Name: name, Mode: filemode.Dir, Hash: hash})
-	}
-
-	hash, err := b.store.AddTree(entries)
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	n.tree = hash
-
-	return hash, nil
 }
 
 // rehash recomputes the tree objects from path's parent up to the root, which
@@ -377,7 +335,7 @@ func (b *Builder) chain(path string) ([]*node, []string) {
 func (b *Builder) nodeAt(path string) (*node, bool) {
 	n := b.root
 
-	for _, name := range strings.Split(path, "/") {
+	for name := range strings.SplitSeq(path, "/") {
 		child, ok := n.children[name]
 		if !ok {
 			return nil, false
@@ -427,12 +385,8 @@ func (b *Builder) detach(path string) {
 
 	delete(parent.children, name)
 
-	for i, have := range parent.order {
-		if have == name {
-			parent.order = append(parent.order[:i], parent.order[i+1:]...)
-
-			break
-		}
+	if i := slices.Index(parent.order, name); i >= 0 {
+		parent.order = slices.Delete(parent.order, i, i+1)
 	}
 }
 
@@ -495,7 +449,7 @@ func (b *Builder) descend(path string) (reflect.Value, bool) {
 		return v, true
 	}
 
-	for _, name := range strings.Split(path, "/") {
+	for name := range strings.SplitSeq(path, "/") {
 		for v.Kind() == reflect.Pointer {
 			if v.IsNil() {
 				return reflect.Value{}, false

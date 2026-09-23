@@ -34,7 +34,7 @@ func parseChangeset(t *testing.T, out string) []change {
 
 	var rows []change
 
-	for _, raw := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+	for raw := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		m := marked.FindStringSubmatch(raw)
 		if m == nil {
 			t.Fatalf("row %q does not parse", raw)

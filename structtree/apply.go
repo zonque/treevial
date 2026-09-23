@@ -3,8 +3,9 @@ package structtree
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -186,10 +187,7 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 // applyLeaf decodes one leaf into its field, clearing the field first so that
 // what the view carries is all that ends up there.
 func (m Mapper) applyLeaf(target reflect.Value, path string, vw view) error {
-	name := path
-	if i := lastSlash(path); i >= 0 {
-		name = path[i+1:]
-	}
+	name := path[strings.LastIndexByte(path, '/')+1:]
 
 	data, st, err := vw.leaf(name)
 	if err != nil {
@@ -211,16 +209,6 @@ func (m Mapper) applyLeaf(target reflect.Value, path string, vw view) error {
 	}
 
 	return nil
-}
-
-func lastSlash(path string) int {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return i
-		}
-	}
-
-	return -1
 }
 
 // mapView reads from a flat map of leaf paths. It has no baseline, so it never
@@ -373,15 +361,14 @@ func (m mapView) children() ([]string, error) {
 
 	collect := func(path string) {
 		if m.prefix != "" {
-			if !strings.HasPrefix(path, m.prefix+"/") {
+			rest, under := strings.CutPrefix(path, m.prefix+"/")
+			if !under {
 				return
 			}
-			path = path[len(m.prefix)+1:]
+			path = rest
 		}
 
-		if i := strings.IndexByte(path, '/'); i >= 0 {
-			path = path[:i]
-		}
+		path, _, _ = strings.Cut(path, "/")
 
 		if path != "" {
 			seen[path] = true
@@ -395,13 +382,7 @@ func (m mapView) children() ([]string, error) {
 		collect(path)
 	}
 
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-
-	return out, nil
+	return slices.Sorted(maps.Keys(seen)), nil
 }
 
 // applyInto fills v from vw, whatever shape v is, allocating through pointers
@@ -453,7 +434,7 @@ func (m Mapper) applySlice(target reflect.Value, path string, vw view) error {
 		indices = append(indices, i)
 	}
 
-	sort.Ints(indices)
+	slices.Sort(indices)
 
 	for i, index := range indices {
 		if index != i {

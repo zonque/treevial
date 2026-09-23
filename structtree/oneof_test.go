@@ -50,7 +50,7 @@ func sampleShapes() *everyShape {
 func TestTheFixtureWouldCatchTheMistake(t *testing.T) {
 	m := setting("x")
 
-	if reflect.TypeOf(m).Implements(reflect.TypeFor[json.Marshaler]()) {
+	if reflect.TypeFor[*testpb.Setting]().Implements(reflect.TypeFor[json.Marshaler]()) {
 		t.Fatal("testpb.Setting carries its own JSON, so it can no longer expose the mistake")
 	}
 

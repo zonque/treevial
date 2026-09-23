@@ -2,7 +2,8 @@ package structtree
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -155,11 +156,5 @@ func (t treeView) subtree(name string) (view, state, error) {
 
 // children implements view.
 func (t treeView) children() ([]string, error) {
-	out := make([]string, 0, len(t.now))
-	for name := range t.now {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-
-	return out, nil
+	return slices.Sorted(maps.Keys(t.now)), nil
 }
