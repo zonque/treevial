@@ -10,11 +10,11 @@ import (
 	"github.com/zonque/treevial/structtree"
 )
 
-// builderOn returns a Builder over cfg with its first, full build done.
-func builderOn(t *testing.T, store *objects.Store, cfg *config) (*structtree.Builder, plumbing.Hash) {
+// builderOn returns a Builder over v with its first, full build done.
+func builderOn(t *testing.T, store *objects.Store, v any) (*structtree.Builder, plumbing.Hash) {
 	t.Helper()
 
-	b, err := structtree.NewBuilder(store, cfg)
+	b, err := structtree.NewBuilder(store, v)
 	if err != nil {
 		t.Fatalf("NewBuilder: %v", err)
 	}

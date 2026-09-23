@@ -83,6 +83,26 @@ func demoPack(t *testing.T) (*objects.Store, plumbing.Hash, []byte) {
 	return s, root, buf.Bytes()
 }
 
+// push sends what a client moving from one tree to another would be sent, and
+// interprets it into the graph.
+func push(t *testing.T, store *objects.Store, g *receive.Graph, from, to plumbing.Hash) {
+	t.Helper()
+
+	hashes, err := store.SelectSince(from, to)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	var pack bytes.Buffer
+	if _, err := store.EncodePack(&pack, hashes); err != nil {
+		t.Fatalf("EncodePack: %v", err)
+	}
+
+	if err := receive.Interpret(&pack, g); err != nil {
+		t.Fatalf("Interpret: %v", err)
+	}
+}
+
 func TestInterpretDecodesEveryObjectInTheStream(t *testing.T) {
 	_, _, pack := demoPack(t)
 

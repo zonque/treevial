@@ -1,7 +1,6 @@
 package receive_test
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -12,26 +11,6 @@ import (
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/receive"
 )
-
-// feed pushes the whole graph rooted at root through a pack and into g, the way
-// a client would receive it.
-func feed(t *testing.T, g *receive.Graph, s *objects.Store, root plumbing.Hash) {
-	t.Helper()
-
-	hashes, err := s.SelectSince(plumbing.ZeroHash, root)
-	if err != nil {
-		t.Fatalf("SelectSince: %v", err)
-	}
-
-	var buf bytes.Buffer
-	if _, err := s.EncodePack(&buf, hashes); err != nil {
-		t.Fatalf("EncodePack: %v", err)
-	}
-
-	if err := receive.Interpret(bytes.NewReader(buf.Bytes()), g); err != nil {
-		t.Fatalf("Interpret: %v", err)
-	}
-}
 
 func blobEntry(t *testing.T, s *objects.Store, name, content string) object.TreeEntry {
 	t.Helper()
@@ -63,7 +42,7 @@ func TestDiffOfAnUnchangedTreeIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}
-	feed(t, g, s, root)
+	push(t, s, g, plumbing.ZeroHash, root)
 
 	changes, err := g.Diff(root, root)
 	if err != nil {
@@ -83,13 +62,13 @@ func TestDiffReportsOnlyTheRewrittenLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildTree: %v", err)
 	}
-	feed(t, g, s, v1)
+	push(t, s, g, plumbing.ZeroHash, v1)
 
 	v2, err := s.ReplaceBlob(v1, "Network/Primary/MTU", []byte("9000"))
 	if err != nil {
 		t.Fatalf("ReplaceBlob: %v", err)
 	}
-	feed(t, g, s, v2)
+	push(t, s, g, plumbing.ZeroHash, v2)
 
 	changes, err := g.Diff(v1, v2)
 	if err != nil {
@@ -117,11 +96,11 @@ func TestDiffReportsAddedAndDeletedLeaves(t *testing.T) {
 	keep := blobEntry(t, s, "keep", "same\n")
 
 	old := tree(t, s, keep, blobEntry(t, s, "gone", "bye\n"))
-	feed(t, g, s, old)
+	push(t, s, g, plumbing.ZeroHash, old)
 
 	added := blobEntry(t, s, "fresh", "hello\n")
 	new := tree(t, s, added, keep)
-	feed(t, g, s, new)
+	push(t, s, g, plumbing.ZeroHash, new)
 
 	changes, err := g.Diff(old, new)
 	if err != nil {
@@ -154,11 +133,11 @@ func TestDiffDescendsIntoAddedAndDeletedSubtrees(t *testing.T) {
 
 	oldSub := tree(t, s, blobEntry(t, s, "one", "1\n"), blobEntry(t, s, "two", "2\n"))
 	old := tree(t, s, object.TreeEntry{Name: "sub", Mode: filemode.Dir, Hash: oldSub})
-	feed(t, g, s, old)
+	push(t, s, g, plumbing.ZeroHash, old)
 
 	newSub := tree(t, s, blobEntry(t, s, "three", "3\n"))
 	new := tree(t, s, object.TreeEntry{Name: "other", Mode: filemode.Dir, Hash: newSub})
-	feed(t, g, s, new)
+	push(t, s, g, plumbing.ZeroHash, new)
 
 	changes, err := g.Diff(old, new)
 	if err != nil {
@@ -192,10 +171,10 @@ func TestDiffReturnsChangesSortedByPath(t *testing.T) {
 	g := receive.NewGraph()
 
 	old := tree(t, s, blobEntry(t, s, "a", "1\n"), blobEntry(t, s, "b", "1\n"), blobEntry(t, s, "c", "1\n"))
-	feed(t, g, s, old)
+	push(t, s, g, plumbing.ZeroHash, old)
 
 	new := tree(t, s, blobEntry(t, s, "a", "2\n"), blobEntry(t, s, "b", "2\n"), blobEntry(t, s, "c", "2\n"))
-	feed(t, g, s, new)
+	push(t, s, g, plumbing.ZeroHash, new)
 
 	changes, err := g.Diff(old, new)
 	if err != nil {

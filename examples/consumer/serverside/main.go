@@ -7,7 +7,6 @@ import (
 	"flag"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -20,16 +19,13 @@ import (
 	"github.com/zonque/treevial-consumer-example/settings"
 )
 
-// provider hands each ref settings of its own, built when a client subscribes
-// to it and dropped when that client leaves.
-type provider struct {
-	mu   sync.Mutex
-	held map[string]*settings.Settings
-}
+// provider builds each ref's settings fresh whenever a client subscribes to
+// it; nothing needs keeping once that client leaves.
+type provider struct{}
 
 // Prepare implements server.Provider. The ref arrives exactly as the client
 // asked for it; what to make of it is this provider's own business.
-func (p *provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	s := &settings.Settings{
 		Owner:   settings.Owner{Name: ref, Team: "field-ops"},
 		Display: settings.Display{Brightness: 80, Rotation: 0},
@@ -43,21 +39,13 @@ func (p *provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 		return nil, plumbing.ZeroHash, err
 	}
 
-	p.mu.Lock()
-	p.held[ref] = s
-	p.mu.Unlock()
-
 	log.Printf("prepared %s -> %s", ref, root)
 
 	return store, root, nil
 }
 
 // Release implements server.Provider.
-func (p *provider) Release(ref string) {
-	p.mu.Lock()
-	delete(p.held, ref)
-	p.mu.Unlock()
-
+func (provider) Release(ref string) {
 	log.Printf("released %s", ref)
 }
 
@@ -72,7 +60,7 @@ func main() {
 
 	log.Printf("listening on %s", lis.Addr())
 
-	srv := server.New(&provider{held: map[string]*settings.Settings{}})
+	srv := server.New(provider{})
 
 	if err := srv.Serve(lis); err != nil {
 		log.Fatal(err)

@@ -1,7 +1,6 @@
 package receive_test
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -35,26 +34,6 @@ func moved(t *testing.T) (g *receive.Graph, before, after plumbing.Hash) {
 	push(t, store, g, before, after)
 
 	return g, before, after
-}
-
-// push sends what a client moving from one tree to another would be sent, and
-// interprets it into the graph.
-func push(t *testing.T, store *objects.Store, g *receive.Graph, from, to plumbing.Hash) {
-	t.Helper()
-
-	hashes, err := store.SelectSince(from, to)
-	if err != nil {
-		t.Fatalf("SelectSince: %v", err)
-	}
-
-	var pack bytes.Buffer
-	if _, err := store.EncodePack(&pack, hashes); err != nil {
-		t.Fatalf("EncodePack: %v", err)
-	}
-
-	if err := receive.Interpret(&pack, g); err != nil {
-		t.Fatalf("Interpret: %v", err)
-	}
 }
 
 func TestRetainDropsWhatNoRootReaches(t *testing.T) {

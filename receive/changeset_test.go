@@ -1,7 +1,6 @@
 package receive_test
 
 import (
-	"bytes"
 	"regexp"
 	"strings"
 	"testing"
@@ -65,20 +64,7 @@ func feedState(t *testing.T, store *objects.Store, graph *receive.Graph, v any) 
 		t.Fatalf("Build: %v", err)
 	}
 
-	hashes, err := store.SelectSince(plumbing.ZeroHash, root)
-	if err != nil {
-		t.Fatalf("SelectSince: %v", err)
-	}
-
-	if len(hashes) > 0 {
-		var buf bytes.Buffer
-		if _, err := store.EncodePack(&buf, hashes); err != nil {
-			t.Fatalf("EncodePack: %v", err)
-		}
-		if err := receive.Interpret(&buf, graph); err != nil {
-			t.Fatalf("Interpret: %v", err)
-		}
-	}
+	push(t, store, graph, plumbing.ZeroHash, root)
 
 	return root
 }
@@ -240,17 +226,7 @@ func TestAChangesetReportsAPathThatChangedKind(t *testing.T) {
 
 	graph := receive.NewGraph()
 	for _, root := range []plumbing.Hash{old, new} {
-		hashes, err := s.SelectSince(plumbing.ZeroHash, root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var buf bytes.Buffer
-		if _, err := s.EncodePack(&buf, hashes); err != nil {
-			t.Fatal(err)
-		}
-		if err := receive.Interpret(&buf, graph); err != nil {
-			t.Fatal(err)
-		}
+		push(t, s, graph, plumbing.ZeroHash, root)
 	}
 
 	out, err := graph.ListingSince(old, new)

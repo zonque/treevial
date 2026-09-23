@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -182,36 +181,7 @@ func serving(t *testing.T, provider server.Provider, f server.Forwarder) (*serve
 		srv.Forward(f)
 	}
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	go func() {
-		if err := srv.Serve(lis); err != nil {
-			t.Logf("Serve: %v", err)
-		}
-	}()
-	t.Cleanup(srv.Stop)
-
-	return srv, lis.Addr().String()
-}
-
-func dialing(t *testing.T, ctx context.Context, addr, ref string) (*client.Client, <-chan client.Update) {
-	t.Helper()
-
-	c, err := client.Dial(ctx, addr)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	t.Cleanup(func() { c.Close() })
-
-	updates, err := c.Subscribe(ctx, ref)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-
-	return c, updates
+	return srv, serve(t, srv)
 }
 
 func TestAServerWithNoObjectsServesAClientFromElsewhere(t *testing.T) {
@@ -227,7 +197,7 @@ func TestAServerWithNoObjectsServesAClientFromElsewhere(t *testing.T) {
 
 	srv, addr := serving(t, provider, hook)
 
-	_, updates := dialing(t, ctx, addr, refA)
+	_, updates := dial(t, ctx, addr, refA)
 
 	u := nextUpdate(t, updates)
 
@@ -292,7 +262,7 @@ func TestWhereAPushIsServedFromIsDecidedEveryTime(t *testing.T) {
 
 	srv, addr := serving(t, provider, hook)
 
-	_, updates := dialing(t, ctx, addr, refA)
+	_, updates := dial(t, ctx, addr, refA)
 
 	first := nextUpdate(t, updates)
 

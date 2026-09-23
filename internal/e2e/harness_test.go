@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -163,6 +164,14 @@ func newHarness(t *testing.T) *harness {
 	provider := newTestProvider()
 	srv := server.New(provider)
 
+	return &harness{server: srv, provider: provider, addr: serve(t, srv)}
+}
+
+// serve starts srv on its own listener and returns where to reach it. The
+// listener is stopped, along with the server, when the test ends.
+func serve(t *testing.T, srv *server.Server) string {
+	t.Helper()
+
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -175,7 +184,7 @@ func newHarness(t *testing.T) *harness {
 	}()
 	t.Cleanup(srv.Stop)
 
-	return &harness{server: srv, provider: provider, addr: lis.Addr().String()}
+	return lis.Addr().String()
 }
 
 // subscribe connects a client to ref and waits for nothing; the caller decides
@@ -183,7 +192,15 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) subscribe(t *testing.T, ctx context.Context, ref string) (*client.Client, <-chan client.Update) {
 	t.Helper()
 
-	c, err := client.Dial(ctx, h.addr)
+	return dial(t, ctx, h.addr, ref)
+}
+
+// dial connects to a treevial server at addr and subscribes to ref, waiting
+// for nothing; the caller decides when to read.
+func dial(t *testing.T, ctx context.Context, addr, ref string) (*client.Client, <-chan client.Update) {
+	t.Helper()
+
+	c, err := client.Dial(ctx, addr)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -217,17 +234,15 @@ func nextUpdate(t *testing.T, updates <-chan client.Update) client.Update {
 func waitForSync(t *testing.T, srv *server.Server, ref string, h plumbing.Hash) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	eventually(t, fmt.Sprintf("%q synced at %s", ref, h), func() bool {
 		for _, sub := range srv.Subscribers() {
 			if sub.Ref == ref && sub.Synced == h {
-				return
+				return true
 			}
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
 
-	t.Fatalf("server never saw %q synced at %s", ref, h)
+		return false
+	})
 }
 
 // eventually polls until cond holds, for assertions about state the server

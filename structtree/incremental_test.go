@@ -58,13 +58,7 @@ func TestATargetedBuildTraversesOnlyWhatWasDeclared(t *testing.T) {
 func TestATargetedBuildStillMatchesAFullRebuild(t *testing.T) {
 	v := sampleDeepMaps()
 
-	b, err := structtree.NewBuilder(objects.NewStore(), v)
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-	if _, err := b.Build(); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	b, _ := builderOn(t, objects.NewStore(), v)
 
 	for i, change := range []struct {
 		apply   func()
@@ -91,15 +85,7 @@ func TestATargetedBuildStillMatchesAFullRebuild(t *testing.T) {
 func TestAKeyAddedWithoutBeingDeclaredIsNotPickedUp(t *testing.T) {
 	v := sampleDeepMaps()
 
-	b, err := structtree.NewBuilder(objects.NewStore(), v)
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-
-	before, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	b, before := builderOn(t, objects.NewStore(), v)
 
 	// Adding an entry changes the shape, and a declaration that names
 	// something else cannot know about it. This is the bargain: a member
@@ -123,13 +109,7 @@ func TestAKeyAddedWithoutBeingDeclaredIsNotPickedUp(t *testing.T) {
 func TestDeclaringTheMapPicksUpAnAddedKey(t *testing.T) {
 	v := sampleDeepMaps()
 
-	b, err := structtree.NewBuilder(objects.NewStore(), v)
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-	if _, err := b.Build(); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	b, _ := builderOn(t, objects.NewStore(), v)
 
 	v.Ports["eth2"] = &device{Name: "spare"}
 
@@ -146,13 +126,7 @@ func TestDeclaringTheMapPicksUpAnAddedKey(t *testing.T) {
 func TestAFullBuildPicksUpAnythingAtAll(t *testing.T) {
 	v := sampleDeepMaps()
 
-	b, err := structtree.NewBuilder(objects.NewStore(), v)
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-	if _, err := b.Build(); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	b, _ := builderOn(t, objects.NewStore(), v)
 
 	v.Ports["eth2"] = &device{Name: "spare"}
 	delete(v.Ports, "eth1")
@@ -171,13 +145,7 @@ func TestAFullBuildPicksUpAnythingAtAll(t *testing.T) {
 func TestAReplacedEntryPointerIsRefusedRatherThanMisattributed(t *testing.T) {
 	v := sampleDeepMaps()
 
-	b, err := structtree.NewBuilder(objects.NewStore(), v)
-	if err != nil {
-		t.Fatalf("NewBuilder: %v", err)
-	}
-	if _, err := b.Build(); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	b, _ := builderOn(t, objects.NewStore(), v)
 
 	// A fresh entry the last build never saw. Attributing it to whatever
 	// used to live at that address would be worse than refusing it.
