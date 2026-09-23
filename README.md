@@ -369,9 +369,14 @@ go srv.Serve(lis)
 srv.SetHead("refs/heads/printer-7/config", newRoot)   // pushes immediately
 ```
 
-`examples/consumer` is a module of its own that does exactly this, and
-`TestSeparateModuleConsumersBuild` builds it — so the claim that each side can
-be consumed independently is checked, not asserted.
+`demo/cmd/server` is a runnable server that does exactly this.
+
+That each side can be consumed independently is checked rather than asserted,
+but by something else: `examples/consumer` is a module of its own that names
+the whole public surface without calling any of it, and
+`TestSeparateModuleConsumersBuild` builds it. A separate module may not import
+`internal/` packages or name internal types, so the day one of them reaches an
+exported signature, that build fails.
 
 The wire format is described in [PROTOCOL.md](PROTOCOL.md): pkt-line framed
 messages over a plain TCP connection, which is the framing git itself uses. Its
@@ -753,7 +758,7 @@ even though the whole struct is current.
 | `demo/cmd/` | The runnable example: a server and a client |
 | `demo/shared/` | The configuration struct both halves of the example share, used by the tests too |
 | `internal/e2e/` | Client and server together over a real TCP listener |
-| `examples/consumer/` | A separate module: a shared `settings` struct, and each side importing only its own half |
+| `examples/consumer/` | A separate module that names the public API without calling it, so an internal type reaching an exported signature breaks the build |
 | `PROTOCOL.md` | The wire contract |
 
 ## A note on go-git's packfile API
