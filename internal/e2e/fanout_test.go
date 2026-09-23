@@ -277,6 +277,23 @@ func TestARefIsNotPreparedAgainUntilItHasBeenReleased(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
+	// Closing the connection is not the same as the server having noticed:
+	// until it does, the ref is still live with that subscriber in it, and
+	// somebody asking for it would simply join what is already there —
+	// nothing released, nothing prepared again, and this test asserting
+	// against a sequence that never had a reason to happen. Waiting for the
+	// subscriber to leave the listing is waiting for disconnect to have run,
+	// which is what starts the release this test is about.
+	eventually(t, "the server to notice the subscriber has gone", func() bool {
+		for _, sub := range h.server.Subscribers() {
+			if sub.Ref == refA {
+				return false
+			}
+		}
+
+		return true
+	})
+
 	// Somebody asks for the same ref while the provider is still busy
 	// letting go of it. Subscribing waits for that to finish rather than
 	// having the ref prepared underneath a release that is about to
