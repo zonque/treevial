@@ -68,15 +68,15 @@
 // [Mapper.ApplySince] has to decode.
 //
 // Producing them is another matter. [Mapper.Build] encodes and hashes every
-// leaf, so it pays for the whole value however little of it moved: on ten
-// thousand map entries, fifty thousand leaves in all, some 213ms for a change
-// to one field.
+// leaf, so it pays for the whole value however little of it moved.
 //
 // A [Builder] pays only for what changed. It keeps the tree it last built and
-// looks at nothing but the paths you declare — the same change costs about 5ms,
-// most of which is the map's own tree object being written again. The price is
-// that it believes you: see [Builder] for what it will not notice, and when to
-// hand it the whole value instead.
+// looks at nothing but the paths you declare, which on a map of ten thousand
+// entries is some thirty times cheaper than a full build — most of what is
+// left being the map's own tree object, which has to be written again whenever
+// any one of its entries moves. The benchmarks in bench_test.go are where that
+// figure comes from. The price is that it believes you: see [Builder] for what
+// it will not notice, and when to hand it the whole value instead.
 package structtree
 
 import (

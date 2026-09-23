@@ -7,8 +7,10 @@ package objects
 import (
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
@@ -21,11 +23,56 @@ import (
 // rather than storing them.
 type Store struct {
 	storage *memory.Storage
+
+	// mu guards decoded, which remembers what a tree object parses to.
+	// Several subscribers to one ref walk the same store at the same time,
+	// so the memo is read from more goroutines than it is written by.
+	mu      sync.RWMutex
+	decoded map[plumbing.Hash][]object.TreeEntry
 }
 
 // NewStore returns an empty in-memory object store.
 func NewStore() *Store {
-	return &Store{storage: memory.NewStorage()}
+	return &Store{
+		storage: memory.NewStorage(),
+		decoded: map[plumbing.Hash][]object.TreeEntry{},
+	}
+}
+
+// entries returns the entries of the tree at h, parsing the object only the
+// first time it is asked for.
+//
+// Walking dominates what a push costs, and parsing dominates a walk:
+// SelectSince walks the whole of the tree a client already holds before it
+// can prune anything, and does that again for every subscriber. Since a store
+// is append-only and content addressed, a hash always parses to the same
+// entries, so what is remembered here can never go stale.
+//
+// The slice is shared with every later caller and must not be modified.
+func (s *Store) entries(h plumbing.Hash) ([]object.TreeEntry, error) {
+	s.mu.RLock()
+	cached, ok := s.decoded[h]
+	s.mu.RUnlock()
+
+	if ok {
+		return cached, nil
+	}
+
+	tree, err := s.Tree(h)
+	if err != nil {
+		return nil, err
+	}
+
+	s.remember(h, tree.Entries)
+
+	return tree.Entries, nil
+}
+
+// remember records what a tree parses to.
+func (s *Store) remember(h plumbing.Hash, entries []object.TreeEntry) {
+	s.mu.Lock()
+	s.decoded[h] = entries
+	s.mu.Unlock()
 }
 
 // AddBlob stores content as a blob and returns its hash.
@@ -64,10 +111,24 @@ func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
 		return plumbing.ZeroHash, err
 	}
 
-	return s.storage.SetEncodedObject(obj)
+	hash, err := s.storage.SetEncodedObject(obj)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	// Writing a tree is the one moment its entries are already in hand, so
+	// the walk that follows never has to parse it back.
+	s.remember(hash, sorted)
+
+	return hash, nil
 }
 
 // Tree decodes the tree object at h.
+//
+// This parses the object every time. It hands back go-git's own *object.Tree,
+// which carries a storer and builds an index of its own as it is used, so one
+// instance cannot be shared between callers; [Store.entries] is the cached way
+// in for the walks that only want the entries.
 func (s *Store) Tree(h plumbing.Hash) (*object.Tree, error) {
 	obj, err := s.storage.EncodedObject(plumbing.TreeObject, h)
 	if err != nil {
@@ -97,13 +158,14 @@ func (s *Store) ReplaceBlob(root plumbing.Hash, path string, content []byte) (pl
 
 	var rebuild func(h plumbing.Hash, parts []string) (plumbing.Hash, error)
 	rebuild = func(h plumbing.Hash, parts []string) (plumbing.Hash, error) {
-		tree, err := s.Tree(h)
+		current, err := s.entries(h)
 		if err != nil {
 			return plumbing.ZeroHash, err
 		}
 
-		entries := make([]object.TreeEntry, len(tree.Entries))
-		copy(entries, tree.Entries)
+		// Cloned before anything is rewritten: the memo hands out the
+		// slice it holds, and this is about to change entries in place.
+		entries := slices.Clone(current)
 
 		for i, e := range entries {
 			if e.Name != parts[0] {

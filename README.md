@@ -300,11 +300,31 @@ there now. A pointer the last build never saw is an error, not a no-op:
 publishing a tree without the change it was meant to carry is the one way this
 could quietly go wrong.
 
-Measured on a map of ten thousand entries, fifty thousand leaves in all: a full
-build 213 ms, a one-field build **5 ms**, one whole entry 5 ms. Nothing outside
-the declared path is encoded, hashed or even looked at; what remains is mostly
-the map's own tree object, which has ten thousand entries and has to be written
-again whenever any of them moves.
+Measured on a map of ten thousand entries, each a struct of three leaves, so
+thirty thousand leaves in all:
+
+```
+$ go test -run '^$' -bench . ./structtree/
+goos: linux
+goarch: amd64
+pkg: github.com/zonque/treevial/structtree
+cpu: AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics
+BenchmarkBuild-16                     25      87032073 ns/op    55303609 B/op    1100618 allocs/op
+BenchmarkBuilderEverything-16         19     120479792 ns/op    71937872 B/op    1160737 allocs/op
+BenchmarkBuilderOneField-16          741       3048477 ns/op     3063405 B/op      40119 allocs/op
+BenchmarkBuilderOneEntry-16          772       3063339 ns/op     3065942 B/op      40173 allocs/op
+```
+
+A full build is 87 ms; a declared one-field build is 3 ms, and that is the
+whole point of the thing. Nothing outside the declared path is encoded, hashed
+or even looked at, so what remains is mostly the map's own tree object, which
+has ten thousand entries and has to be written again whenever any one of them
+moves — which is also why declaring a whole entry costs the same as declaring
+one field inside it.
+
+`BenchmarkBuilderEverything` is a Builder told nothing about what moved, and it
+is slower than a plain `Build` because it also records the index a later
+targeted build resolves against. That index is what the 3 ms is bought with.
 
 ### What it will not notice
 
@@ -414,7 +434,28 @@ client that reconnects and names what it holds is sent nothing at all.
 
 This is per subscriber, not per ref: two clients following one ref from
 different starting points are sent different objects, worked out from the same
-tree.
+tree. Which means the walk is paid once per subscriber on every move, so what
+it costs is worth knowing. On a tree of ten thousand subtrees and fifty
+thousand blobs — sixty thousand objects in all:
+
+```
+$ go test -run '^$' -bench . ./objects/
+goos: linux
+goarch: amd64
+pkg: github.com/zonque/treevial/objects
+cpu: AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics
+BenchmarkSelectSinceFromNothing-16      272       8578397 ns/op    13078253 B/op    536 allocs/op
+BenchmarkSelectSinceOneLeafMoved-16     321       7492818 ns/op     6024082 B/op    512 allocs/op
+BenchmarkEncodePackOneLeafMoved-16      368       6413285 ns/op      814673 B/op     43 allocs/op
+```
+
+Working out that a one-field move owes a subscriber three objects takes 7.5 ms
+— not far off the 8.6 ms it takes to work out that a subscriber holding nothing
+owes the whole sixty thousand. Pruning saves the sending, not the deciding: a
+subtree can only be pruned once the walk has established that the client is
+standing on it. A `Store` remembers what each tree object parses to, which is
+where the allocation counts above come from — five hundred rather than the
+three hundred thousand a re-parse of every tree on every walk would cost.
 
 ## What went over the wire
 
@@ -731,6 +772,7 @@ without any object it has not already been given.
 $ go test ./...             # includes building examples/consumer
 $ go test -short ./...      # skips the separate-module build
 $ go test -race ./...
+$ go test -run '^$' -bench . ./structtree/ ./objects/   # the figures quoted above
 ```
 
 `.github/workflows/test.yml` runs the same checks on every pull request and on

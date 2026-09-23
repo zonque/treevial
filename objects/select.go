@@ -80,12 +80,12 @@ func (s *Store) walk(root plumbing.Hash, visit func(plumbing.Hash) (bool, error)
 			return err
 		}
 
-		tree, err := s.Tree(h)
+		entries, err := s.entries(h)
 		if err != nil {
 			return err
 		}
 
-		for _, e := range tree.Entries {
+		for _, e := range entries {
 			if err := descend(e.Hash, e.Mode == filemode.Dir); err != nil {
 				return err
 			}
