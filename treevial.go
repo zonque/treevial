@@ -19,7 +19,8 @@
 //     without storing it.
 //
 // This package holds what both sides must agree on: what counts as a usable
-// ref, what a client may name itself, and how the server reports a refusal.
+// ref, what a client and a server may each name themselves, and how the server
+// reports a refusal.
 // How a client decides which ref to ask for is the client's own business; the
 // example in demo/cmd/client builds one from an identifier it is given, and
 // that convention lives in that program alone.
@@ -92,6 +93,42 @@ const MaxRefLength = 512
 // cannot be handed an unbounded string to keep for every connection.
 const MaxClientIDLength = 128
 
+// MaxServerIDLength bounds the name a server may give itself. It is
+// deliberately the same as MaxClientIDLength: both travel as one field of one
+// pkt-line, so both are bounded for the same reason.
+const MaxServerIDLength = 128
+
+// validateID is the rule both names obey. They travel as one field of one
+// pkt-line, so neither may contain a space or a control character, and both
+// are bounded. kind names the thing being validated, so the error says which.
+func validateID(kind, id string, limit int) error {
+	if len(id) > limit {
+		return fmt.Errorf("%s is %d bytes, limit is %d", kind, len(id), limit)
+	}
+
+	for _, r := range id {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("%s %q contains %q", kind, id, r)
+		}
+	}
+
+	return nil
+}
+
+// ValidateServerID reports whether id is a usable server identifier.
+//
+// A server names itself so that a client can log which server it reached and
+// tell whether it reached the one it meant to. The client takes the name
+// verbatim: it derives nothing from it, never routes on it, and a server that
+// does not name itself serves exactly the same. An empty id means the server
+// did not name itself, which is allowed.
+//
+// It is a label, not a credential — a server can claim any name, exactly as a
+// client can.
+func ValidateServerID(id string) error {
+	return validateID("server ID", id, MaxServerIDLength)
+}
+
 // ValidateClientID reports whether id is a usable client identifier.
 //
 // A client names itself so that whoever runs the server can tell its
@@ -104,17 +141,7 @@ const MaxClientIDLength = 128
 // travels as one field of one pkt-line, so no spaces and no control
 // characters, and it is bounded.
 func ValidateClientID(id string) error {
-	if len(id) > MaxClientIDLength {
-		return fmt.Errorf("client ID is %d bytes, limit is %d", len(id), MaxClientIDLength)
-	}
-
-	for _, r := range id {
-		if r <= ' ' || r == 0x7f {
-			return fmt.Errorf("client ID %q contains %q", id, r)
-		}
-	}
-
-	return nil
+	return validateID("client ID", id, MaxClientIDLength)
 }
 
 // ValidateRef reports whether ref is a usable git ref name.

@@ -153,7 +153,7 @@ func TestConnCountersAccumulateOverTheWholeConnection(t *testing.T) {
 // writeUpdate announces an update and sends pack as its payload, the way the
 // server does.
 func writeUpdate(conn *wire.Conn, pack []byte) error {
-	if err := conn.WriteUpdate(someHash, 17); err != nil {
+	if err := conn.WriteUpdate(someHash, 17, ""); err != nil {
 		return err
 	}
 

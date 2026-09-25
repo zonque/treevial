@@ -32,7 +32,7 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Option`, `WithID`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
@@ -363,7 +363,10 @@ func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 
 func (provider) Release(ref string) { /* drop whatever Prepare set up */ }
 
-srv := server.New(provider{})
+srv, err := server.New(provider{})   // and server.WithID("node-3"), to name it
+if err != nil {
+	log.Fatal(err)
+}
 go srv.Serve(lis)
 
 srv.SetHead("refs/heads/printer-7/config", newRoot)   // pushes immediately
@@ -598,6 +601,34 @@ field of one line, so it may not contain spaces or control characters and is
 bounded at 128 bytes — `treevial.ValidateClientID` is the rule, applied by the
 client before dialling and by the server on what arrives.
 
+### And a server may name itself
+
+`WithID` gives a server a name, which it sends to every client that registers
+with it:
+
+```go
+srv, err := server.New(provider{}, server.WithID("node-3"))
+```
+
+The client reads it back off every `Update`, so a log line can say which server
+it came from, and an application can notice it reached one it did not mean to:
+
+```go
+log.Printf("%s -> %s from %s", u.Ref, u.Hash, u.ServerID)
+```
+
+The name is sent once, before the ref is even prepared, so a client refused
+because its ref could not be prepared still learns which server refused it. (A
+registration that does not parse is turned away before that, and gets no name.)
+It costs 18 bytes on the connection and nothing on any push — the first update
+is the same 949 bytes it always was.
+
+It is advisory in both directions, and treevial refuses nothing over the value
+of a name. Nor is it a credential: a server can claim any, exactly as a client
+can. A server that is not named sends no such line at all and is byte for byte
+on the wire what it always was — so naming one is also choosing to require
+clients that understand the line.
+
 ## Serving a ref this server does not own
 
 In a cluster, the node a client happens to be connected to may not be the one
@@ -621,7 +652,7 @@ srv.Forward(server.ForwarderFunc(func(ctx context.Context, req server.Push) (*se
 		return nil, err
 	}
 
-	return &server.Pack{Objects: count, Body: body}, nil
+	return &server.Pack{Objects: count, Body: body, OriginID: leader.ID()}, nil
 }))
 ```
 
@@ -631,6 +662,13 @@ connection that is already open. The `ctx` is that client's, cancelled when it
 hangs up, so a fetch is not left outstanding for somebody who has gone. An
 error is reported to the client as a refusal — a `*treevial.Error` with
 whatever code the forwarder chose, anything else as `internal`.
+
+`OriginID` is what reaches the client as `Update.OriginID`, so a forwarded push
+says where its objects came from while `Update.ServerID` still names the server
+the client is connected to. Since the forwarder is asked for every push, a
+re-election shows up as the origin changing from one push to the next on a
+connection that never moved — and leaving `OriginID` empty says nothing rather
+than saying "here".
 
 Two things stay with the application, deliberately. **How the servers talk to
 each other** is not treevial's business: the leader answers such a fetch with

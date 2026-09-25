@@ -23,7 +23,9 @@ import (
 
 // Listening, and pushing when a ref moves.
 var (
-	_ func(server.Provider) *server.Server = server.New
+	_ func(server.Provider, ...server.Option) (*server.Server, error) = server.New
+	_ func(string) server.Option                                      = server.WithID
+	_ func(*server.Server) string                                     = (*server.Server).ID
 
 	_ func(*server.Server, net.Listener) error          = (*server.Server).Serve
 	_ func(*server.Server)                              = (*server.Server).Stop
@@ -86,6 +88,7 @@ var (
 	_ plumbing.Hash = push.Want
 
 	_ int       = pack.Objects
+	_ string    = pack.OriginID
 	_ io.Reader = pack.Body
 
 	_ server.EventKind    = event.Kind

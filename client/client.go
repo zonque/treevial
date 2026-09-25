@@ -9,6 +9,11 @@
 // which ref a given device, tenant or installation should follow is entirely
 // its own business.
 //
+// A client is told the name of the server it reached, if that server has one,
+// and the name of wherever a forwarded push's objects came from. Both arrive
+// on every [Update] as labels to log; nothing is decided by either, and
+// neither is checked.
+//
 // A client repository depends on this package and on
 // [github.com/zonque/treevial/receive]; it does not need the server side at
 // all.
@@ -40,8 +45,22 @@ const keepalivePeriod = 30 * time.Second
 // has interpreted so far.
 type Update struct {
 	// Ref the update arrived for: the head this client asked for.
-	Ref  string
-	Hash plumbing.Hash
+	Ref string
+	// ServerID is the name the server gave itself, or empty if it did not
+	// name itself. A server sends it at most once, so in practice it is
+	// the same on every update of a connection — but that is the
+	// protocol's promise rather than something this client enforces, and
+	// a server that broke it would simply be reported as it behaved.
+	//
+	// It is a label to log. The client takes it verbatim: it is not
+	// checked, nothing is decided by it, and a server that sends one
+	// serves exactly what a server that does not would.
+	ServerID string
+	// OriginID names the server this push's objects were fetched from, and
+	// is empty when the server named none — which covers both a push served
+	// from its own store and a forwarder that said nothing.
+	OriginID string
+	Hash     plumbing.Hash
 	// Previous is the hash this subscription was at before the update, or
 	// the zero hash for the first one. Graph.Diff(Previous, Hash) is what
 	// turns an update into a list of changed paths, and ApplySince uses the
@@ -260,6 +279,11 @@ func (c *Client) consume(
 ) error {
 	previous := synced
 
+	// serverID is whatever the server called itself, recorded as it
+	// arrives and stamped onto every update. The client does not examine
+	// it, and a second such line simply replaces it.
+	var serverID string
+
 	// heads are the states the graph is asked to keep, newest last. It is
 	// only used when the caller asked for the graph to be swept.
 	var heads []plumbing.Hash
@@ -280,6 +304,16 @@ func (c *Client) consume(
 			}
 
 			return err
+		}
+
+		if msg.Type == wire.Announce {
+			// Nothing follows a name — no pack, nothing to drain —
+			// so this reads the next message rather than the pack
+			// reader, which would otherwise swallow the next
+			// update's pack.
+			serverID = msg.ServerID
+
+			continue
 		}
 
 		// Swept here, with an update in hand but before a byte of it
@@ -319,6 +353,8 @@ func (c *Client) consume(
 		select {
 		case updates <- Update{
 			Ref:         ref,
+			ServerID:    serverID,
+			OriginID:    msg.OriginID,
 			Hash:        msg.Hash,
 			Previous:    previous,
 			ObjectCount: msg.ObjectCount,

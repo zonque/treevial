@@ -104,11 +104,13 @@ type forwarder struct {
 	stopped chan error
 	// withheld, when set, is returned instead of a real pack.
 	withheld *server.Pack
+	// origin is what the hook names as the source of what it fetched.
+	origin string
 }
 
 func (f *forwarder) Forward(ctx context.Context, req server.Push) (*server.Pack, error) {
 	f.mu.Lock()
-	on, fail, block, withheld := f.on, f.fail, f.block, f.withheld
+	on, fail, block, withheld, origin := f.on, f.fail, f.block, f.withheld, f.origin
 	f.mu.Unlock()
 
 	if !on {
@@ -137,7 +139,13 @@ func (f *forwarder) Forward(ctx context.Context, req server.Push) (*server.Pack,
 		return withheld, nil
 	}
 
-	return f.remote.pack(req.Have, req.Want)
+	pack, err := f.remote.pack(req.Have, req.Want)
+	if err != nil {
+		return nil, err
+	}
+	pack.OriginID = origin
+
+	return pack, nil
 }
 
 func (f *forwarder) set(fn func(*forwarder)) {
@@ -176,7 +184,11 @@ func (p *stubProvider) Release(string) {}
 func serving(t *testing.T, provider server.Provider, f server.Forwarder) (*server.Server, string) {
 	t.Helper()
 
-	srv := server.New(provider)
+	srv, err := server.New(provider)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
 	if f != nil {
 		srv.Forward(f)
 	}
@@ -461,5 +473,106 @@ func TestAFetchIsAbandonedWhenItsClientHangsUp(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the fetch was never told the client had gone")
+	}
+}
+
+func TestAForwardedPushNamesWhereItCameFrom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	remote := newElsewhere(t, refA)
+
+	provider := &stubProvider{store: objects.NewStore(), head: remote.head}
+	hook := &forwarder{remote: remote, on: true, origin: "node-5"}
+
+	_, addr := serving(t, provider, hook)
+
+	_, updates := dial(t, ctx, addr, refA)
+
+	u := nextUpdate(t, updates)
+
+	if u.OriginID != "node-5" {
+		t.Errorf("OriginID = %q, want %q", u.OriginID, "node-5")
+	}
+}
+
+// Forward is asked on every push, so the origin may be on one and gone from the
+// next — which is a cluster re-electing under a connection that never moved.
+func TestTheOriginFollowsWhereEachPushWasServedFrom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	remote := newElsewhere(t, refA)
+
+	local := objects.NewStore()
+	localConfig := shared.Example(refA)
+
+	builder, err := structtree.NewBuilder(local, localConfig)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+	if _, err := builder.Build(); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	provider := &stubProvider{store: local, head: remote.head}
+	hook := &forwarder{remote: remote, on: true, origin: "node-5"}
+
+	srv, addr := serving(t, provider, hook)
+
+	_, updates := dial(t, ctx, addr, refA)
+
+	first := nextUpdate(t, updates)
+	if first.OriginID != "node-5" {
+		t.Fatalf("first push OriginID = %q, want %q", first.OriginID, "node-5")
+	}
+
+	// This server takes the ref over, and serves the next push itself.
+	hook.set(func(f *forwarder) { f.on = false })
+
+	second := remote.move(t, 9000)
+
+	localConfig.Network.Primary.MTU = 9000
+	if _, err := builder.Build(&localConfig.Network.Primary.MTU); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if err := srv.SetHead(refA, second); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	u := followTo(t, updates, second)
+
+	if u.OriginID != "" {
+		t.Errorf("a locally served push reported OriginID %q, want empty", u.OriginID)
+	}
+}
+
+// The origin goes on the update line, so a name with a space in it would
+// produce a line nobody could parse. It is refused before it is written.
+func TestAnUnusableOriginIsRefusedRatherThanWritten(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	remote := newElsewhere(t, refA)
+
+	provider := &stubProvider{store: objects.NewStore(), head: remote.head}
+	hook := &forwarder{remote: remote, on: true, origin: "node 5"}
+
+	_, addr := serving(t, provider, hook)
+
+	c, err := client.Dial(ctx, addr)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	updates, err := c.Subscribe(ctx, refA)
+	if err == nil {
+		err = drainForError(t, c, updates)
+	}
+
+	if got := treevial.CodeOf(err); got != treevial.CodeInternal {
+		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeInternal)
 	}
 }

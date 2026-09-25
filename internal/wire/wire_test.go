@@ -168,7 +168,7 @@ func TestAckCarriesTheHash(t *testing.T) {
 func TestUpdateCarriesTheHashAndObjectCount(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return server.WriteUpdate(someHash, 16) })
+	writing(t, func() error { return server.WriteUpdate(someHash, 16, "") })
 
 	msg, err := client.ReadServerMessage()
 	if err != nil {
@@ -194,7 +194,7 @@ func TestPackDataSurvivesTheRoundTrip(t *testing.T) {
 	}
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 3); err != nil {
+		if err := server.WriteUpdate(someHash, 3, ""); err != nil {
 			return err
 		}
 
@@ -224,7 +224,7 @@ func TestAnUpdateWithNoPackEndsImmediately(t *testing.T) {
 	client, server := pair(t)
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 0); err != nil {
+		if err := server.WriteUpdate(someHash, 0, ""); err != nil {
 			return err
 		}
 
@@ -252,7 +252,7 @@ func TestTheConnectionCarriesOneUpdateAfterAnother(t *testing.T) {
 
 	writing(t, func() error {
 		for _, h := range []plumbing.Hash{someHash, second} {
-			if err := server.WriteUpdate(h, 1); err != nil {
+			if err := server.WriteUpdate(h, 1, ""); err != nil {
 				return err
 			}
 
@@ -357,5 +357,96 @@ func TestMalformedServerLinesAreRejected(t *testing.T) {
 		if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
 			t.Errorf("line %q: code %q, want %q", line, got, treevial.CodeInvalid)
 		}
+	}
+}
+
+func TestServerLineRoundTrips(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error { return server.WriteServerID("node-3") })
+
+	msg, err := client.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+
+	if msg.Type != wire.Announce {
+		t.Errorf("type = %v, want Announce", msg.Type)
+	}
+	if msg.ServerID != "node-3" {
+		t.Errorf("ServerID = %q, want %q", msg.ServerID, "node-3")
+	}
+}
+
+func TestAnUpdateCarriesAnOptionalOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin string
+	}{
+		{"served locally", ""},
+		{"forwarded", "node-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := pair(t)
+
+			writing(t, func() error { return server.WriteUpdate(someHash, 17, tc.origin) })
+
+			msg, err := client.ReadServerMessage()
+			if err != nil {
+				t.Fatalf("ReadServerMessage: %v", err)
+			}
+
+			if msg.Type != wire.Update {
+				t.Errorf("type = %v, want Update", msg.Type)
+			}
+			if msg.Hash != someHash {
+				t.Errorf("Hash = %s, want %s", msg.Hash, someHash)
+			}
+			if msg.ObjectCount != 17 {
+				t.Errorf("ObjectCount = %d, want 17", msg.ObjectCount)
+			}
+			if msg.OriginID != tc.origin {
+				t.Errorf("OriginID = %q, want %q", msg.OriginID, tc.origin)
+			}
+		})
+	}
+}
+
+// A three-field update is what every server before this change sent, and it
+// has to keep parsing exactly as it did.
+func TestAThreeFieldUpdateStillParses(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error {
+		return server.WriteLine("update " + someHash.String() + " 17")
+	})
+
+	msg, err := client.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+	if msg.ObjectCount != 17 || msg.OriginID != "" {
+		t.Errorf("got %+v, want 17 objects and no origin", msg)
+	}
+}
+
+func TestMalformedServerAndUpdateLinesAreRefused(t *testing.T) {
+	for _, line := range []string{
+		"server",                                 // no id
+		"server ",                                // an empty id is not a name
+		"server node-3 extra",                    // one field only
+		"update " + someHash.String(),            // no count
+		"update " + someHash.String() + " 4 ",    // empty trailing field
+		"update " + someHash.String() + " 4 a b", // too many fields
+	} {
+		t.Run(line, func(t *testing.T) {
+			client, server := pair(t)
+
+			writing(t, func() error { return server.WriteLine(line) })
+
+			if _, err := client.ReadServerMessage(); err == nil {
+				t.Errorf("ReadServerMessage accepted %q", line)
+			}
+		})
 	}
 }

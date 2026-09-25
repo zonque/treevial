@@ -63,16 +63,41 @@ type ClientMessage struct {
 	Hash plumbing.Hash
 }
 
-// ServerMessage is a message from server to client: an update, announcing a
-// new state and preceding the pack that carries it.
+// ServerMessageType tells the two messages a server sends apart.
+type ServerMessageType int
+
+const (
+	// Update announces a new state, and the pack carrying it follows.
+	Update ServerMessageType = iota
+	// Announce carries the name a server gave itself. It is sent once,
+	// before anything else, and nothing follows it.
+	Announce
+)
+
+// String implements fmt.Stringer.
+func (t ServerMessageType) String() string {
+	if t == Announce {
+		return "server"
+	}
+
+	return "update"
+}
+
+// ServerMessage is a message from server to client: an update announcing a new
+// state and preceding the pack that carries it, or a server naming itself.
 //
-// There is no discriminator because there is nothing to discriminate. The only
-// other thing a server sends is an error, and that comes back from
-// [Conn.ReadServerMessage] as an error rather than as a message. Should a
-// second kind of message ever arrive, this is where it would earn one.
+// An error is the only other thing a server sends, and that comes back from
+// [Conn.ReadServerMessage] as an error rather than as a message.
 type ServerMessage struct {
+	Type ServerMessageType
+	// Hash and ObjectCount are set on an Update.
 	Hash        plumbing.Hash
 	ObjectCount int
+	// ServerID is set on an Announce: the name the server gave itself.
+	ServerID string
+	// OriginID is set on an Update whose objects were fetched from another
+	// server, and is empty when the sending server named none.
+	OriginID string
 }
 
 // Conn is one end of a treevial connection.
@@ -171,10 +196,26 @@ func (c *Conn) WriteAck(hash plumbing.Hash) error {
 	return c.WriteLine(fmt.Sprintf("ack %s", hash))
 }
 
+// WriteServerID tells the client the name this server gave itself. It is sent
+// once, after a registration is accepted and before anything else; nothing
+// follows it.
+func (c *Conn) WriteServerID(id string) error {
+	return c.WriteLine("server " + id)
+}
+
 // WriteUpdate announces a new state. The pack follows, written through
 // PackWriter, whose Close ends the update.
-func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int) error {
-	return c.WriteLine(fmt.Sprintf("update %s %d", hash, objects))
+//
+// origin names the server the objects were fetched from, and is left off the
+// line entirely when empty — which is how "served from this server's own
+// store" is said.
+func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int, origin string) error {
+	line := fmt.Sprintf("update %s %d", hash, objects)
+	if origin != "" {
+		line += " " + origin
+	}
+
+	return c.WriteLine(line)
 }
 
 // WriteError reports a refusal. Nothing follows it: the sender hangs up.
@@ -263,8 +304,20 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 	fields := strings.Split(line, " ")
 
 	switch fields[0] {
+	case "server":
+		// One field, and not an empty one: a server that did not name
+		// itself sends no line at all rather than an empty name.
+		if len(fields) != 2 || fields[1] == "" {
+			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed server line %q", line)
+		}
+
+		return ServerMessage{Type: Announce, ServerID: fields[1]}, nil
+
 	case "update":
-		if len(fields) != 3 {
+		// The origin is the one optional field, and the last, so an
+		// update from a server that has none reads exactly as it always
+		// did.
+		if len(fields) != 3 && len(fields) != 4 {
 			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
 		}
 
@@ -278,7 +331,18 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed object count in %q", line)
 		}
 
-		return ServerMessage{Hash: hash, ObjectCount: objects}, nil
+		msg := ServerMessage{Type: Update, Hash: hash, ObjectCount: objects}
+
+		if len(fields) == 4 {
+			// Absent is how "no origin" is said; an empty field is
+			// a malformed line rather than another way of saying it.
+			if fields[3] == "" {
+				return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
+			}
+			msg.OriginID = fields[3]
+		}
+
+		return msg, nil
 
 	case "error":
 		if len(fields) < 2 {

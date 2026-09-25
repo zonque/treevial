@@ -65,7 +65,32 @@ arrives the server considers the client behind, and will not push again.
 ### Server to client
 
 ```
-update <hash> <object-count>
+server <id>
+```
+
+`server` is the name the server gave itself. It is sent once, immediately after
+a registration is accepted and before anything else — before the ref is
+prepared, so a client refused because its ref could not be prepared still
+learns which server refused it. Nothing follows it.
+
+A registration that does not parse is refused before this, and gets an `error`
+with no name in front of it: the name follows an accepted `register`, never a
+rejected one.
+
+It is sent **only by a server that has been given a name**. One that has not
+sends no such line, and its half of the exchange is byte for byte what it
+always was. Naming a server is therefore also choosing to require clients that
+understand this line, since a client that does not know it refuses it as it
+refuses any unknown message.
+
+The client takes the name verbatim: it derives nothing from it, never routes on
+it, and is served exactly the same whether or not there is one. Like a client's
+own name it is one field of one line, so it may not contain spaces or control
+characters, and it is at most 128 bytes. It is a label, not a credential — a
+server can claim any name, exactly as a client can.
+
+```
+update <hash> <object-count> [<origin-id>]
 <pack data as pkt-lines>
 0000
 ```
@@ -73,6 +98,12 @@ update <hash> <object-count>
 `update` announces the new state of the client's ref. `<object-count>` is how
 many objects follow in decimal; it may be `0`, in which case the client is
 already current and the flush-pkt follows immediately.
+
+`<origin-id>` is optional and last: the name of the server the objects were
+fetched from, when this server did not serve them from its own store. Absent
+means the server named no origin, which covers both a push served from here and
+one forwarded by something that did not say where from. An empty field is not
+another way of saying absent, and is refused.
 
 The pack is a standard git packfile, split across as many pkt-lines as it takes
 and closed by a flush-pkt. It may be split at any point, so a reader has to
@@ -116,6 +147,29 @@ Had that client named itself `printer-7`, its first line would read
 `005cregister refs/heads/printer-7/config 0000…0000 printer-7` — the same line
 with one more field — and nothing else about the exchange would differ.
 
+Had the server been named `node-3`, and the second push been forwarded from a
+server called `node-5`, the same exchange would read:
+
+```
+client → 0052register refs/heads/printer-7/config 0000000000000000000000000000000000000000
+server → 0012server node-3
+server → 0037update 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805 17
+server → 037a<886 bytes of pack>
+server → 0000
+client → 0031ack 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
+
+         … the server's data changes, and it no longer owns the ref …
+
+server → 003dupdate 30e5ce8082820717b3fb5fec3e962c1d62103e14 4 node-5
+server → 015f<347 bytes of pack>
+server → 0000
+client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
+```
+
+The name costs 18 bytes once, on the connection rather than on any push: the
+first update is still the same 949 bytes it always was, and the second still
+409 plus the seven its origin adds.
+
 Seventeen objects the first time and four the second, because the four are all
 that moved: the second pack is 347 bytes against 886. Counting the lines in
 full — the update message, the headers, the flush-pkt — the first update is 949
@@ -129,6 +183,9 @@ which may be hours after the last byte, and a deadline would tear down a
 perfectly good connection in the meantime. Both sides enable TCP keepalive at 30
 seconds so that NATs and middleboxes do not forget an idle connection; the
 probes do not close a healthy one.
+
+One connection carries at most one `server` line, since a server's name does
+not change while it is running.
 
 One connection carries one subscription, but a ref may have any number of
 subscribers: a second connection naming a ref somebody else is already

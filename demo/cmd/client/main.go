@@ -87,8 +87,8 @@ func run(addr, clientID string) error {
 	for u := range updates {
 		push++
 
-		log.Printf("push %d: %s -> %s, %d objects, %s on the wire (%s in total)",
-			push, u.Ref, u.Hash, u.ObjectCount,
+		log.Printf("push %d: %s -> %s from %s, %d objects, %s on the wire (%s in total)",
+			push, u.Ref, u.Hash, from(u, addr), u.ObjectCount,
 			size(u.Bytes), size(u.TotalBytes))
 
 		report, err := render(u, &config)
@@ -172,6 +172,23 @@ func render(u client.Update, config *shared.Config) (string, error) {
 	fmt.Fprintf(&b, "  %s = %s\n", name, encoded)
 
 	return b.String(), nil
+}
+
+// from names where a push came from, the way a person reading a log wants it:
+// the server that sent it, and — when that server fetched the objects from
+// somewhere else — where they actually came from. A server that did not name
+// itself has only its address to be known by.
+func from(u client.Update, addr string) string {
+	sender := u.ServerID
+	if sender == "" {
+		sender = addr
+	}
+
+	if u.OriginID == "" {
+		return sender
+	}
+
+	return fmt.Sprintf("%s via %s", u.OriginID, sender)
 }
 
 // size renders a byte count the way a human reads it. The figures it is given

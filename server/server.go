@@ -8,6 +8,9 @@
 // of prepared objects and each moves at its own pace, so a slow subscriber
 // delays nobody else.
 //
+// A server may name itself, and every client that registers is told that name
+// — a label for logs, not a credential, and not something the server acts on.
+//
 // A server need not own what it serves: a [Forwarder] fetches a push's objects
 // from wherever the ref actually lives, which lets a cluster move a ref
 // between its nodes without the clients following it noticing anything.
@@ -148,6 +151,17 @@ type Pack struct {
 	// a forwarder says the subscriber is already current. If Body is an
 	// io.Closer it is closed once the pack has been written on.
 	Body io.Reader
+	// OriginID names the server these objects were fetched from, so that a
+	// client can log where a push it was sent actually came from. Leaving
+	// it empty says nothing rather than saying "here".
+	//
+	// Nothing is decided by its value, but it does go on the update line
+	// as one field, so it has to survive that: one that would not — a
+	// space, a control character, over 128 bytes — ends the subscription
+	// with an internal error rather than being written into a line the
+	// client could not parse. [github.com/zonque/treevial.ValidateServerID]
+	// is the rule.
+	OriginID string
 }
 
 // EventKind says what happened to a subscription.
@@ -330,6 +344,10 @@ const keepalivePeriod = 30 * time.Second
 // everyone following.
 type Server struct {
 	provider Provider
+	// id is the name this server gives itself, or empty if it was not
+	// given one. Set once by an Option before Serve and never written
+	// again, so it needs no lock.
+	id string
 
 	mu        sync.Mutex
 	refs      map[string]*refState
@@ -340,13 +358,56 @@ type Server struct {
 	forwarder Forwarder
 }
 
+// Option configures a Server as it is created. An option that cannot be
+// satisfied reports why, and [New] returns that error rather than a server.
+type Option func(*Server) error
+
 // New returns a server that asks provider for each ref's objects.
-func New(provider Provider) *Server {
-	return &Server{
+func New(provider Provider, opts ...Option) (*Server, error) {
+	s := &Server{
 		provider: provider,
 		refs:     map[string]*refState{},
 		conns:    map[*wire.Conn]struct{}{},
 	}
+
+	for _, opt := range opts {
+		if err := opt(s); err != nil {
+			return nil, err
+		}
+	}
+
+	return s, nil
+}
+
+// WithID gives the server a name of its own, which it tells every client that
+// registers with it.
+//
+// It is a label for whoever reads the client's logs: something better than an
+// address to recognise a server by, and a way for a client to notice it
+// reached one it did not mean to. Nothing is decided by it — the server serves
+// exactly the same whether or not it is named, and a client derives nothing
+// from it. It is not a credential: a server can claim any name, exactly as a
+// client can.
+//
+// A server that is not given one sends no such line at all, and is byte for
+// byte on the wire what it has always been. Naming a server is therefore also
+// choosing to require clients that understand the line.
+func WithID(id string) Option {
+	return func(s *Server) error {
+		if err := treevial.ValidateServerID(id); err != nil {
+			return treevial.Errorf(treevial.CodeInvalid, "%v", err)
+		}
+
+		s.id = id
+
+		return nil
+	}
+}
+
+// ID reports the name this server gave itself, or the empty string if it was
+// not given one.
+func (s *Server) ID() string {
+	return s.id
 }
 
 // Watch registers w to be told about subscriptions as they come, catch up and
@@ -585,6 +646,16 @@ func (s *Server) serve(ctx context.Context, conn *wire.Conn, addr string) error 
 	msg, err := register(conn)
 	if err != nil {
 		return err
+	}
+
+	// Sent before the ref is prepared, so a client refused because its ref
+	// could not be prepared still learns which server refused it. A
+	// registration that does not parse is refused above this, and gets no
+	// name — there is nothing yet to say it to.
+	if s.id != "" {
+		if err := conn.WriteServerID(s.id); err != nil {
+			return err
+		}
 	}
 
 	c, err := s.connect(conn, addr, msg)
@@ -839,7 +910,7 @@ func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, hash 
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
 
-	if err := conn.WriteUpdate(hash, len(missing)); err != nil {
+	if err := conn.WriteUpdate(hash, len(missing), ""); err != nil {
 		return err
 	}
 
@@ -903,7 +974,14 @@ func sendPack(conn *wire.Conn, hash plumbing.Hash, pack *Pack) error {
 			"forwarded pack announces %d objects but carries none", pack.Objects)
 	}
 
-	if err := conn.WriteUpdate(hash, pack.Objects); err != nil {
+	// It goes on the update line as one field, so a name that could not
+	// survive that is refused rather than written into a line the client
+	// would fail to parse.
+	if err := treevial.ValidateServerID(pack.OriginID); err != nil {
+		return treevial.Errorf(treevial.CodeInternal, "forwarded pack: %v", err)
+	}
+
+	if err := conn.WriteUpdate(hash, pack.Objects, pack.OriginID); err != nil {
 		return err
 	}
 

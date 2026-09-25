@@ -135,3 +135,43 @@ func TestValidateClientIDRejectsOverlongIDs(t *testing.T) {
 			len(id), treevial.MaxClientIDLength)
 	}
 }
+
+func TestValidateServerID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		ok   bool
+	}{
+		{"empty is allowed", "", true},
+		{"a plain name", "node-3", true},
+		{"at the limit", strings.Repeat("n", treevial.MaxServerIDLength), true},
+		{"one byte over", strings.Repeat("n", treevial.MaxServerIDLength+1), false},
+		{"a space", "node 3", false},
+		{"a tab", "node\t3", false},
+		{"a newline", "node\n3", false},
+		{"delete", "node\x7f3", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := treevial.ValidateServerID(tc.id)
+			if tc.ok && err != nil {
+				t.Errorf("ValidateServerID(%q) = %v, want nil", tc.id, err)
+			}
+			if !tc.ok && err == nil {
+				t.Errorf("ValidateServerID(%q) = nil, want an error", tc.id)
+			}
+		})
+	}
+}
+
+// The two rules are one implementation, so a server ID is refused for exactly
+// the reasons a client ID is.
+func TestServerAndClientIDsShareOneRule(t *testing.T) {
+	for _, id := range []string{"", "node-3", "node 3", "node\n3", strings.Repeat("n", 129)} {
+		server := treevial.ValidateServerID(id) == nil
+		client := treevial.ValidateClientID(id) == nil
+
+		if server != client {
+			t.Errorf("%q: server accepted=%v, client accepted=%v", id, server, client)
+		}
+	}
+}

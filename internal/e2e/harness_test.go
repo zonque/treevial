@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -44,6 +45,9 @@ type testProvider struct {
 	// releaseDelay makes letting go take a while, which is when an
 	// overlapping preparation would show up.
 	releaseDelay time.Duration
+	// failPrepare makes preparation fail, so a test can watch a client
+	// being refused.
+	failPrepare bool
 }
 
 func newTestProvider() *testProvider {
@@ -53,7 +57,12 @@ func newTestProvider() *testProvider {
 func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
 	p.mu.Lock()
 	p.calls = append(p.calls, "prepare "+ref)
+	fail := p.failPrepare
 	p.mu.Unlock()
+
+	if fail {
+		return nil, plumbing.ZeroHash, errors.New("no data for this ref")
+	}
 
 	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
 
@@ -162,7 +171,11 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	provider := newTestProvider()
-	srv := server.New(provider)
+
+	srv, err := server.New(provider)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	return &harness{server: srv, provider: provider, addr: serve(t, srv)}
 }

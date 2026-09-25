@@ -29,26 +29,40 @@ import (
 
 func main() {
 	addr := flag.String("listen", "127.0.0.1:9418", "address to listen on")
+	id := flag.String("id", "", "name this server reports to its clients (optional)")
 	mutate := flag.Duration("mutate", 3*time.Second, "change a nested field this long after a client syncs (0 to disable)")
 	flag.Parse()
 
-	if err := run(*addr, *mutate); err != nil {
+	if err := run(*addr, *id, *mutate); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(addr string, mutate time.Duration) error {
+func run(addr, id string, mutate time.Duration) error {
 	provider := newDemoProvider()
-	srv := server.New(provider)
+
+	var opts []server.Option
+	if id != "" {
+		opts = append(opts, server.WithID(id))
+	}
+
+	srv, err := server.New(provider, opts...)
+	if err != nil {
+		return fmt.Errorf("new server: %w", err)
+	}
 
 	srv.Watch(newTracker(srv, provider, mutate))
 
-	lis, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+	lis, listenErr := net.Listen("tcp", addr)
+	if listenErr != nil {
+		return fmt.Errorf("listen: %w", listenErr)
 	}
 
-	log.Printf("listening on %s; data is prepared per ref on connect", lis.Addr())
+	if named := srv.ID(); named != "" {
+		log.Printf("listening on %s as %q; data is prepared per ref on connect", lis.Addr(), named)
+	} else {
+		log.Printf("listening on %s; data is prepared per ref on connect", lis.Addr())
+	}
 
 	go watchSignals(srv)
 
