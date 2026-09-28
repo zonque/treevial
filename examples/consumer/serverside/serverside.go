@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -25,6 +26,7 @@ import (
 var (
 	_ func(server.Provider, ...server.Option) (*server.Server, error) = server.New
 	_ func(string) server.Option                                      = server.WithID
+	_ func(time.Duration) server.Option                               = server.WithDeadPeerTimeout
 	_ func(*server.Server) string                                     = (*server.Server).ID
 
 	_ func(*server.Server, net.Listener) error          = (*server.Server).Serve

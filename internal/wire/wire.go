@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
@@ -170,6 +171,18 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // Close closes the underlying connection.
 func (c *Conn) Close() error {
 	return c.rw.Close()
+}
+
+// Raw exposes the socket beneath the connection, for settings that have no
+// expression in Go's own API — how long an unresponsive peer may hold it, in
+// particular. A caller holding a Conn has no other way to reach it.
+func (c *Conn) Raw() (syscall.RawConn, error) {
+	sc, ok := c.rw.(syscall.Conn)
+	if !ok {
+		return nil, fmt.Errorf("wire: %T is not a syscall.Conn", c.rw)
+	}
+
+	return sc.SyscallConn()
 }
 
 // WriteLine writes one raw line. It exists so tests can put malformed input on

@@ -16,6 +16,7 @@ package clientside
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 
@@ -40,6 +41,7 @@ var (
 	_ func(context.Context, string, ...client.Option) (*client.Client, error) = client.Dial
 	_ func(string) client.Option                                              = client.WithID
 	_ func(int) client.Option                                                 = client.WithHistory
+	_ func(time.Duration) client.Option                                       = client.WithDeadPeerTimeout
 
 	_ func(*client.Client, context.Context, string) (<-chan client.Update, error)                                = (*client.Client).Subscribe
 	_ func(*client.Client, context.Context, string, plumbing.Hash, *receive.Graph) (<-chan client.Update, error) = (*client.Client).Resume

@@ -3,6 +3,7 @@ package server_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 
@@ -59,5 +60,37 @@ func TestAServerNeedNotNameItself(t *testing.T) {
 
 	if got := srv.ID(); got != "" {
 		t.Errorf("ID() = %q, want empty", got)
+	}
+}
+
+func TestNewRefusesADeadPeerTimeoutTooSmallToEnforce(t *testing.T) {
+	srv, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(time.Millisecond))
+	if err == nil {
+		t.Fatal("New accepted a one-millisecond dead-peer timeout")
+	}
+	if srv != nil {
+		t.Error("New returned a server alongside an error")
+	}
+	if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
+		t.Errorf("code = %s, want %s", got, treevial.CodeInvalid)
+	}
+}
+
+func TestNewAcceptsAUsableDeadPeerTimeout(t *testing.T) {
+	if _, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(90*time.Second)); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+}
+
+// Zero means unset, not "a timeout of nothing", so it must not be refused the
+// way a too-small one is — and it must mean the same on both sides, since a
+// caller driving these from configuration will have one zero default for both.
+func TestAServerNeedNoDeadPeerTimeout(t *testing.T) {
+	if _, err := server.New(stubProvider{}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(0)); err != nil {
+		t.Errorf("WithDeadPeerTimeout(0) = %v, want it read as unset, the way the client reads it", err)
 	}
 }

@@ -9,6 +9,10 @@
 // which ref a given device, tenant or installation should follow is entirely
 // its own business.
 //
+// A peer that vanishes rather than closing is a different matter, and
+// [WithDeadPeerTimeout] is how long one may do so before its connection is
+// given up on.
+//
 // A client is told the name of the server it reached, if that server has one,
 // and the name of wherever a forwarded push's objects came from. Both arrive
 // on every [Update] as labels to log; nothing is decided by either, and
@@ -25,11 +29,13 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/internal/tcpkeep"
 	"github.com/zonque/treevial/internal/wire"
 	"github.com/zonque/treevial/receive"
 )
@@ -87,6 +93,9 @@ type Client struct {
 	// everything it is ever sent, which is not the same as keeping none.
 	history  int
 	sweeping bool
+	// deadPeer is how long a peer may be unresponsive before the
+	// connection is given up on, or zero to leave that to the system.
+	deadPeer time.Duration
 
 	mu  sync.Mutex
 	err error
@@ -134,6 +143,38 @@ func WithHistory(n int) Option {
 	}
 }
 
+// WithDeadPeerTimeout bounds how long a peer may be unresponsive before the
+// connection to it is given up on.
+//
+// A treevial connection is quiet by design — the server pushes when it has
+// something to say, which may be hours after the last byte — so nothing here
+// puts a deadline on silence. This bounds the other thing: a peer that has
+// actually gone, whose host vanished or whose process was killed without
+// closing. Without it such a connection can be held for the system's own
+// retransmit default, which is measured in minutes.
+//
+// One duration drives both mechanisms that can notice. Keepalive probes start
+// halfway through the budget and run four times across the rest of it, and
+// where TCP_USER_TIMEOUT exists it bounds unacknowledged data. Those are
+// different failures: probes only go out on an idle connection, so a peer that
+// dies mid-push is caught by the user timeout alone — and therefore, today,
+// only on Linux.
+//
+// The schedule is worked out in whole seconds, which is the unit the kernel
+// keeps it in, so the shortest budget that can be expressed is eight seconds
+// and rounding may cost a little more than was asked for — never less. See
+// [github.com/zonque/treevial/internal/tcpkeep.For].
+//
+// When the connection does go, it ends the way any other ending does: the
+// update channel closes and [Client.Err] says why. Deciding whether to dial
+// again is the application's business, not this package's.
+//
+// Left unset, nothing changes: the connection keeps the plain 30-second
+// keepalive it has always had, and outlives a long outage.
+func WithDeadPeerTimeout(d time.Duration) Option {
+	return func(c *Client) { c.deadPeer = d }
+}
+
 // Dial connects to a treevial server. See [WithID] for naming the client.
 //
 // No deadline is ever set on the connection: the server pushes when it has
@@ -158,7 +199,25 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 			c.history)
 	}
 
+	if c.deadPeer != 0 {
+		if err := tcpkeep.Validate(c.deadPeer); err != nil {
+			return nil, treevial.Errorf(treevial.CodeInvalid, "%v", err)
+		}
+	}
+
+	// Unset, this is the plain keepalive the connection has always had.
 	dialer := net.Dialer{KeepAlive: keepalivePeriod}
+
+	if c.deadPeer != 0 {
+		live := tcpkeep.For(c.deadPeer)
+
+		dialer = net.Dialer{
+			KeepAliveConfig: live.KeepAlive,
+			Control: func(_, _ string, rc syscall.RawConn) error {
+				return tcpkeep.SetUserTimeout(rc, live.UserTimeout)
+			},
+		}
+	}
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {

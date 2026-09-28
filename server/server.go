@@ -11,6 +11,10 @@
 // A server may name itself, and every client that registers is told that name
 // — a label for logs, not a credential, and not something the server acts on.
 //
+// A subscriber that vanishes rather than disconnecting holds everything it had
+// — a place in [Server.Subscribers], and a ref that can never be released.
+// [WithDeadPeerTimeout] bounds how long it may.
+//
 // A server need not own what it serves: a [Forwarder] fetches a push's objects
 // from wherever the ref actually lives, which lets a cluster move a ref
 // between its nodes without the clients following it noticing anything.
@@ -32,6 +36,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/zonque/treevial"
+	"github.com/zonque/treevial/internal/tcpkeep"
 	"github.com/zonque/treevial/internal/wire"
 	"github.com/zonque/treevial/objects"
 )
@@ -348,6 +353,10 @@ type Server struct {
 	// given one. Set once by an Option before Serve and never written
 	// again, so it needs no lock.
 	id string
+	// deadPeer is how long a subscriber may be unresponsive before its
+	// connection is given up on, or zero to leave that to the system. Set
+	// once before Serve, so it needs no lock either.
+	deadPeer time.Duration
 
 	mu        sync.Mutex
 	refs      map[string]*refState
@@ -399,6 +408,48 @@ func WithID(id string) Option {
 		}
 
 		s.id = id
+
+		return nil
+	}
+}
+
+// WithDeadPeerTimeout bounds how long a subscriber may be unresponsive before
+// its connection is given up on.
+//
+// A subscriber that vanishes without closing — its host gone, its process
+// killed — otherwise keeps everything it held. It stays in [Server.Subscribers]
+// as though it were still following, its ref never has a last subscriber to
+// leave, so [Provider.Release] never runs and the objects behind that ref are
+// never handed back. Bounding the connection is what lets all of that be
+// reclaimed.
+//
+// One duration drives both mechanisms that can notice: keepalive probes start
+// halfway through the budget and run four times across the rest, and where
+// TCP_USER_TIMEOUT exists it bounds unacknowledged data. A subscriber that
+// dies mid-push is caught by the second alone, and so today only on Linux.
+//
+// The schedule is worked out in whole seconds, which is the unit the kernel
+// keeps it in, so the shortest budget that can be expressed is eight seconds
+// and rounding may cost a little more than was asked for — never less.
+//
+// Left unset, nothing changes: connections keep the plain 30-second keepalive
+// they have always had, and a quiet subscriber is never disturbed.
+func WithDeadPeerTimeout(d time.Duration) Option {
+	return func(s *Server) error {
+		// Zero is how "unset" is spelled, not a budget of nothing, and
+		// it reads the same here as it does on the client — which
+		// matters when both are driven from one piece of configuration.
+		if d == 0 {
+			s.deadPeer = 0
+
+			return nil
+		}
+
+		if err := tcpkeep.Validate(d); err != nil {
+			return treevial.Errorf(treevial.CodeInvalid, "%v", err)
+		}
+
+		s.deadPeer = d
 
 		return nil
 	}
@@ -484,11 +535,31 @@ func (s *Server) Serve(lis net.Listener) error {
 		}
 
 		if tcp, ok := conn.(*net.TCPConn); ok {
-			_ = tcp.SetKeepAlive(true)
-			_ = tcp.SetKeepAlivePeriod(keepalivePeriod)
+			s.tune(tcp)
 		}
 
 		go s.handle(conn)
+	}
+}
+
+// tune sets how long this connection may go unanswered before it is given up
+// on. Failures are ignored, as they already were: a connection whose liveness
+// could not be tuned is still a usable connection, and there is nobody to tell
+// — the client it would concern has not registered yet.
+func (s *Server) tune(conn *net.TCPConn) {
+	if s.deadPeer == 0 {
+		_ = conn.SetKeepAlive(true)
+		_ = conn.SetKeepAlivePeriod(keepalivePeriod)
+
+		return
+	}
+
+	live := tcpkeep.For(s.deadPeer)
+
+	_ = conn.SetKeepAliveConfig(live.KeepAlive)
+
+	if raw, err := conn.SyscallConn(); err == nil {
+		_ = tcpkeep.SetUserTimeout(raw, live.UserTimeout)
 	}
 }
 

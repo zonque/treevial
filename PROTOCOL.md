@@ -184,6 +184,13 @@ perfectly good connection in the meantime. Both sides enable TCP keepalive at 30
 seconds so that NATs and middleboxes do not forget an idle connection; the
 probes do not close a healthy one.
 
+Either side may instead be configured to give up on a peer that has stopped
+responding, by shortening that keepalive schedule and, where the platform has
+it, setting `TCP_USER_TIMEOUT` to match. Nothing about that is visible on the wire —
+these are socket options, not messages — so an implementation of this protocol
+need not know they exist. The only effect one can observe is the one any
+hang-up has: the connection ends.
+
 One connection carries at most one `server` line, since a server's name does
 not change while it is running.
 

@@ -30,9 +30,9 @@ go get github.com/zonque/treevial
 | Import | For | Pulls in |
 |---|---|---|
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
-| `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
+| `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `WithDeadPeerTimeout`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Option`, `WithID`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Option`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
@@ -707,6 +707,56 @@ not close a healthy one.
 That is the whole of it: there is nothing in a TCP connection that counts down
 while it is quiet, and nothing that punishes a peer for talking. A subscription
 ends when one side closes the connection, and not before.
+
+### Unless the peer is gone
+
+A peer that closes is noticed at once. A peer that *vanishes* — host gone,
+process killed, cable pulled — is not, because nothing distinguishes it from a
+peer with nothing to say. Left to the system such a connection can be held for
+the retransmit default, minutes away.
+
+`WithDeadPeerTimeout` bounds that, on either side:
+
+```go
+conn, err := client.Dial(ctx, addr, client.WithDeadPeerTimeout(90*time.Second))
+srv, err := server.New(provider{}, server.WithDeadPeerTimeout(90*time.Second))
+```
+
+One duration, because the two mechanisms that can notice are complementary
+rather than independent. Keepalive probes begin halfway through the budget and
+run four times across the rest; `TCP_USER_TIMEOUT`, where it exists, bounds
+unacknowledged data.
+
+Both are worked out in whole seconds, which is the unit the kernel keeps a
+keepalive schedule in — anything finer is rounded up on the way in, so a
+schedule with a fraction of a second in it is not the schedule that gets
+applied. The user timeout is then derived from that schedule rather than from
+the budget directly: Linux overrides the configured probe count with its own,
+computed as `(user timeout − idle) / interval`, so setting the timeout to
+`idle + 4 × interval` is what makes its arithmetic land on the same four. The
+two agree rather than fight, and a platform with the user timeout reaches the
+same verdict as one without.
+
+Rounding up can cost a little more than was asked for and never less: a
+connection is given up on no sooner than the budget. The shortest budget that
+can be expressed is eight seconds, since the probe interval is an eighth of it
+and a second is the finest the kernel keeps.
+
+The split that platform makes is worth knowing. Probes only go out on an *idle*
+connection, so a peer that dies **mid-push**, with data unacknowledged, is
+caught by the user timeout alone — and that is Linux's. Elsewhere the option
+still bounds an idle peer; it does not bound that one.
+
+On the server this is what lets a vanished subscriber be reclaimed at all:
+until its connection ends it stays in `Subscribers`, its ref never has a last
+subscriber to leave, and `Release` never runs.
+
+When the connection does go it ends like any other ending — the update channel
+closes and `Client.Err` says why. Reconnecting is the application's business;
+treevial does not redial.
+
+Unset, nothing changes: the plain 30-second keepalive, and a connection that
+outlives a long outage.
 
 ## Try the example
 
