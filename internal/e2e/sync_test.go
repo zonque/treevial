@@ -216,6 +216,39 @@ func TestDisconnectReleasesTheClientsResources(t *testing.T) {
 	}
 }
 
+func TestARetiringRefIsNoLongerPublished(t *testing.T) {
+	h := newHarness(t)
+
+	// Letting go takes this provider a moment. The ref's entry outlives the
+	// last subscriber by exactly that long, because it is what keeps the
+	// ref from being prepared again mid-release — and for that whole window
+	// nobody is subscribed to the ref.
+	h.provider.releaseDelay = 300 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cli, updates := h.subscribe(t, ctx, refA)
+	u := nextUpdate(t, updates)
+	waitForSync(t, h.server, refA, u.Hash)
+
+	if err := cli.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	eventually(t, "the server to notice the disconnect", func() bool {
+		return len(h.server.Subscribers()) == 0
+	})
+
+	// The release is still running, so this is the middle of the window.
+	if got := h.server.Head(refA); got != plumbing.ZeroHash {
+		t.Errorf("a ref being retired still reports head %s, want the zero hash", got)
+	}
+	if err := h.server.SetHead(refA, u.Hash); err == nil {
+		t.Error("SetHead moved a ref that nobody is subscribed to")
+	}
+}
+
 func TestSetHeadForAnUnknownClientFails(t *testing.T) {
 	h := newHarness(t)
 

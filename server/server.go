@@ -596,7 +596,7 @@ func (s *Server) Stop() {
 // current head in one go rather than walked through the states it missed.
 func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 	s.mu.Lock()
-	st, ok := s.refs[ref]
+	st, ok := s.living(ref)
 
 	var following []*subscriber
 	if ok {
@@ -624,7 +624,7 @@ func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 // subscribed to it.
 func (s *Server) Head(ref string) plumbing.Hash {
 	s.mu.Lock()
-	st, ok := s.refs[ref]
+	st, ok := s.living(ref)
 	s.mu.Unlock()
 
 	if !ok {
@@ -632,6 +632,20 @@ func (s *Server) Head(ref string) plumbing.Hash {
 	}
 
 	return st.currentHead()
+}
+
+// living returns the state for ref if the ref is one that somebody is
+// subscribed to. An entry being retired — its last subscriber gone, its data
+// on the way back to the provider — stays in the map so the ref cannot be
+// prepared again while that release is still running, but it no longer stands
+// for a ref anyone can read or move. The caller holds s.mu.
+func (s *Server) living(ref string) (*refState, bool) {
+	st, ok := s.refs[ref]
+	if !ok || st.retiring {
+		return nil, false
+	}
+
+	return st, true
 }
 
 // Subscribers snapshots the connected subscribers, one entry per connection.
