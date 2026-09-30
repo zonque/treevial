@@ -66,6 +66,19 @@ type Update struct {
 	// is empty when the server named none — which covers both a push served
 	// from its own store and a forwarder that said nothing.
 	OriginID string
+	// Sequence is the ordinal of the head this update carries, or zero if
+	// the server sent none.
+	//
+	// It is non-decreasing on one connection, and may repeat: a wake that
+	// finds the head unmoved produces a zero-object update at the sequence
+	// already reported. Across connections it is comparable only insofar as
+	// whatever owns the ref makes it so — see
+	// [github.com/zonque/treevial/server.Head].
+	//
+	// One client is one connection to one server, so nothing here acts on
+	// it. An application that runs several clients for redundancy is what
+	// compares them and decides which arriving head supersedes which.
+	Sequence uint64
 	Hash     plumbing.Hash
 	// Previous is the hash this subscription was at before the update, or
 	// the zero hash for the first one. Graph.Diff(Previous, Hash) is what
@@ -414,6 +427,7 @@ func (c *Client) consume(
 			Ref:         ref,
 			ServerID:    serverID,
 			OriginID:    msg.OriginID,
+			Sequence:    msg.Sequence,
 			Hash:        msg.Hash,
 			Previous:    previous,
 			ObjectCount: msg.ObjectCount,

@@ -471,7 +471,7 @@ func TestMalformedUpdateTrailersAreRefused(t *testing.T) {
 		"update " + someHash.String() + " 4 seq=98 seq=99",            // a repeat
 		"update " + someHash.String() + " 4 origin=a origin=b",        // a repeat
 		"update " + someHash.String() + " 4 what=98",                  // an unknown key
-		"update " + someHash.String() + " 4 node-5",                   // the old positional form
+		"update " + someHash.String() + " 4 node-5",                   // a value without a key
 		"update " + someHash.String() + " 4 seq",                      // no value at all
 		"update " + someHash.String() + " 4 seq=",                     // an empty value
 		"update " + someHash.String() + " 4 origin=",                  // an empty value

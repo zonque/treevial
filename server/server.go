@@ -53,8 +53,8 @@ import (
 // from a snapshot, and never again after.
 //
 // A zero Sequence means the ref is unsequenced, which is what a server with
-// nothing to order against uses. Such a ref behaves exactly as every ref did
-// before sequences existed, and nothing about one is written on the wire.
+// nothing to order against uses. Nothing about such a ref is checked, and
+// nothing about it is written on the wire.
 //
 // Equal sequences mean equal heads. Unequal sequences do not mean unequal
 // heads: with a log index used directly, two nodes at different indices hold
@@ -289,6 +289,13 @@ type refState struct {
 
 	mu   sync.Mutex
 	head Head
+	// sequenced says whether this ref is ordered, and installed whether
+	// anybody has given it a head at all. The kind is fixed by whichever of
+	// the provider and the application installs one first: a SetHead may
+	// arrive while a preparation is still running, and must not block
+	// waiting for it.
+	sequenced bool
+	installed bool
 }
 
 func newRefState() *refState {
@@ -306,13 +313,49 @@ func (st *refState) currentHead() Head {
 	return st.head
 }
 
-// setHead moves the ref. Every subscriber following it is behind until it says
+// moveHead points the ref at head if head is allowed to move it, and says
+// whether it did. Every subscriber following the ref is behind until it says
 // otherwise.
-func (st *refState) setHead(head Head) {
+//
+// A sequenced ref moves only forward: a head at a sequence the ref has reached
+// already is a re-delivered one, and taking it would announce a state the
+// subscribers have been told about. An unsequenced ref moves unconditionally,
+// because with nothing to compare there is no way to tell which of two heads
+// is the newer — which is what an ordinal is for.
+func (st *refState) moveHead(head Head) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	if !st.installed {
+		st.head = head
+		st.sequenced = head.Sequence != 0
+		st.installed = true
+
+		return true, nil
+	}
+
+	if st.sequenced != (head.Sequence != 0) {
+		return false, treevial.Errorf(treevial.CodeInvalid,
+			"a %s head on a %s ref: ordering across a mixture is undefined",
+			kind(head.Sequence != 0), kind(st.sequenced))
+	}
+
+	if st.sequenced && head.Sequence <= st.head.Sequence {
+		return false, nil
+	}
+
 	st.head = head
+
+	return true, nil
+}
+
+// kind names what moveHead refused, so its message reads as a sentence.
+func kind(sequenced bool) string {
+	if sequenced {
+		return "sequenced"
+	}
+
+	return "unsequenced"
 }
 
 // subscriber is one connected client. Its whole state is the hash it last
@@ -651,7 +694,17 @@ func (s *Server) SetHead(ref string, head Head) error {
 		return fmt.Errorf("set head of %q: %w", ref, ErrNoSubscribers)
 	}
 
-	st.setHead(head)
+	moved, err := st.moveHead(head)
+	if err != nil {
+		return fmt.Errorf("set head of %q: %w", ref, err)
+	}
+
+	// Only a ref that moved has anything to say. Waking on an apply that
+	// did not move one would announce a state its subscribers have already
+	// been told about.
+	if !moved {
+		return fmt.Errorf("set head of %q to sequence %d: %w", ref, head.Sequence, ErrNotAdvancing)
+	}
 
 	for _, c := range following {
 		c.wake()
@@ -930,25 +983,37 @@ func (s *Server) connect(
 // waiting on the answer through.
 func (s *Server) prepare(st *refState, ref string) {
 	store, head, err := s.provider.Prepare(ref)
+
 	if err != nil {
 		st.err = treevial.Errorf(treevial.CodeInternal,
 			"prepare data for %q: %v", ref, err)
-
-		// A failed preparation is not remembered: the entry goes, so the
-		// next client to ask for this ref has the provider tried again
-		// rather than inheriting this answer.
-		s.mu.Lock()
-		if s.refs[ref] == st {
-			delete(s.refs, ref)
-		}
-		s.mu.Unlock()
+		s.forget(ref, st)
+	} else if _, err := st.moveHead(head); err != nil {
+		// The application has already given this ref a head of the other
+		// kind, so which of the two is newer has no answer. Refusing the
+		// subscriber says so; serving it would not.
+		st.err = treevial.Errorf(treevial.CodeInternal,
+			"prepare data for %q: %v", ref, err)
+		s.forget(ref, st)
 	} else {
+		// A head that does not advance is not a failure: the application
+		// has moved this ref past what the provider built, and the ref is
+		// where it should be.
 		st.store = store
 		st.prepared = true
-		st.setHead(head)
 	}
 
 	close(st.ready)
+}
+
+// forget drops a ref whose preparation failed, so that the next client to ask
+// for it has the provider tried again rather than inheriting this answer.
+func (s *Server) forget(ref string, st *refState) {
+	s.mu.Lock()
+	if s.refs[ref] == st {
+		delete(s.refs, ref)
+	}
+	s.mu.Unlock()
 }
 
 // disconnect is the other half of connect: it runs when a subscriber's

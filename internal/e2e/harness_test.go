@@ -48,6 +48,14 @@ type testProvider struct {
 	// failPrepare makes preparation fail, so a test can watch a client
 	// being refused.
 	failPrepare bool
+	// sequenced makes this provider hand out sequenced heads, starting at
+	// 1, the way one backed by a consensus layer would.
+	sequenced bool
+	// preparing is closed by Prepare to say it has been entered, and
+	// prepareGate holds it there, so a test can act in the window between
+	// a subscriber joining a ref and the provider answering for it.
+	preparing   chan struct{}
+	prepareGate chan struct{}
 }
 
 func newTestProvider() *testProvider {
@@ -62,6 +70,11 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) 
 
 	if fail {
 		return nil, server.Head{}, errors.New("no data for this ref")
+	}
+
+	if p.preparing != nil {
+		close(p.preparing)
+		<-p.prepareGate
 	}
 
 	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
@@ -83,7 +96,12 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) 
 	p.held[ref] = data
 	p.prepared = append(p.prepared, ref)
 
-	return data.store, server.Head{Hash: root}, nil
+	head := server.Head{Hash: root}
+	if p.sequenced {
+		head.Sequence = 1
+	}
+
+	return data.store, head, nil
 }
 
 func (p *testProvider) Release(ref string) {

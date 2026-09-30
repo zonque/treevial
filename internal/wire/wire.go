@@ -333,8 +333,8 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 		return ServerMessage{Type: Announce, ServerID: fields[1]}, nil
 
 	case "update":
-		// Whatever follows the count is a trailer, so an update from a
-		// server that has none reads exactly as it always did.
+		// Whatever follows the count is a trailer, and a server with
+		// none to send sends three fields and stops.
 		if len(fields) < 3 {
 			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
 		}

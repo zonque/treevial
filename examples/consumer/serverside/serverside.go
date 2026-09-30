@@ -29,13 +29,25 @@ var (
 	_ func(time.Duration) server.Option                               = server.WithDeadPeerTimeout
 	_ func(*server.Server) string                                     = (*server.Server).ID
 
-	_ func(*server.Server, net.Listener) error          = (*server.Server).Serve
-	_ func(*server.Server)                              = (*server.Server).Stop
-	_ func(*server.Server, string, plumbing.Hash) error = (*server.Server).SetHead
-	_ func(*server.Server, string) plumbing.Hash        = (*server.Server).Head
-	_ func(*server.Server) []server.Subscription        = (*server.Server).Subscribers
-	_ func(*server.Server, server.Watcher)              = (*server.Server).Watch
-	_ func(*server.Server, server.Forwarder)            = (*server.Server).Forward
+	_ func(*server.Server, net.Listener) error        = (*server.Server).Serve
+	_ func(*server.Server)                            = (*server.Server).Stop
+	_ func(*server.Server, string, server.Head) error = (*server.Server).SetHead
+	_ func(*server.Server, string) server.Head        = (*server.Server).Head
+	_ func(*server.Server) []server.Subscription      = (*server.Server).Subscribers
+	_ func(*server.Server, server.Watcher)            = (*server.Server).Watch
+	_ func(*server.Server, server.Forwarder)          = (*server.Server).Forward
+)
+
+// Where a ref points, and the two ways a head that may not move it is
+// reported.
+var (
+	head server.Head
+
+	_ plumbing.Hash = head.Hash
+	_ uint64        = head.Sequence
+
+	_ error = server.ErrNoSubscribers
+	_ error = server.ErrNotAdvancing
 )
 
 // The interfaces an application implements, and the values they are handed.
@@ -51,17 +63,18 @@ var (
 // that the interface has to be satisfiable from outside the module.
 type provider struct{}
 
-func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+func (provider) Prepare(ref string) (*objects.Store, server.Head, error) {
 	store := objects.NewStore()
 
 	root, err := structtree.Build(store, &settings.Settings{
 		Owner: settings.Owner{Name: ref},
 	})
 	if err != nil {
-		return nil, plumbing.ZeroHash, err
+		return nil, server.Head{}, err
 	}
 
-	return store, root, nil
+	// No consensus layer behind this one, so its refs are unsequenced.
+	return store, server.Head{Hash: root}, nil
 }
 
 func (provider) Release(string) {}
@@ -78,7 +91,7 @@ var (
 	_ string        = subscription.Ref
 	_ string        = subscription.ClientID
 	_ string        = subscription.Addr
-	_ plumbing.Hash = subscription.Head
+	_ server.Head   = subscription.Head
 	_ plumbing.Hash = subscription.Synced
 	_ int64         = subscription.Sent
 	_ int64         = subscription.Received
