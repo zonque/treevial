@@ -1,5 +1,9 @@
 # treevial — server-driven sync over git objects
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/zonque/treevial.svg)](https://pkg.go.dev/github.com/zonque/treevial)
+[![test](https://github.com/zonque/treevial/actions/workflows/test.yml/badge.svg)](https://github.com/zonque/treevial/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `treevial` keeps a client in sync with data the server owns. The client dials
 in, names the head it wants to follow and the tree it already holds, and then
 asks for nothing further: the **server** prepares that ref's objects and pushes
