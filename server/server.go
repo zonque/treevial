@@ -87,8 +87,11 @@ var (
 // Prepare and Release are called once per ref, not once per connection, and
 // never overlap for the same ref: a Release always completes before that ref
 // can be prepared again. Several subscribers to one ref share what Prepare
-// returned, so a store must not be written to while any of them may be reading
-// it — see [Server.Subscribers] for how to tell.
+// returned, and objects may be added to that store while they are reading it:
+// adding cannot change what an existing root reaches. Nothing can be removed,
+// which is why reclaiming a store means a new one rather than a pruned one.
+// [Server.Subscribers] is how to tell a ref is quiet, for callers who need
+// that for their own reasons.
 //
 // The ref is whatever the client asked for, passed on unchanged. What it means
 // — a device, a tenant, a configuration — is the provider's business; the

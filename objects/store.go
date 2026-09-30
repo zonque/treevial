@@ -15,14 +15,26 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 // Store keeps git objects in memory. It is the server's view of the object
 // graph; the client never uses one, since it interprets objects as they arrive
 // rather than storing them.
+//
+// A Store may be read while it is being appended to, which is what a server
+// behind a consensus layer needs: a push encoding, a snapshot walking and an
+// entry adding all at once. Adding cannot change what an existing root
+// reaches, so the three do not have to be kept apart.
 type Store struct {
 	storage *memory.Storage
+
+	// objects guards storage. go-git reads it on its own account — both the
+	// packfile encoder and the tree decoder are handed a storer — so what
+	// they are given is a [view] that takes this lock per access rather
+	// than the storage itself.
+	objects sync.RWMutex
 
 	// mu guards decoded, which remembers what a tree object parses to.
 	// Several subscribers to one ref walk the same store at the same time,
@@ -37,6 +49,65 @@ func NewStore() *Store {
 		storage: memory.NewStorage(),
 		decoded: map[plumbing.Hash][]object.TreeEntry{},
 	}
+}
+
+// view is the storage as go-git sees it: every access takes the store's lock.
+// The lock is held inside a call into go-git, never across one.
+type view struct {
+	storage *memory.Storage
+	mu      *sync.RWMutex
+}
+
+// storer returns the view to hand go-git.
+func (s *Store) storer() view {
+	return view{storage: s.storage, mu: &s.objects}
+}
+
+// NewEncodedObject returns an object that is not in the storage yet, so it
+// needs no lock until it is set.
+func (v view) NewEncodedObject() plumbing.EncodedObject {
+	return v.storage.NewEncodedObject()
+}
+
+func (v view) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	return v.storage.SetEncodedObject(obj)
+}
+
+func (v view) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	return v.storage.EncodedObject(t, h)
+}
+
+func (v view) IterEncodedObjects(t plumbing.ObjectType) (storer.EncodedObjectIter, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	return v.storage.IterEncodedObjects(t)
+}
+
+func (v view) HasEncodedObject(h plumbing.Hash) error {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	return v.storage.HasEncodedObject(h)
+}
+
+func (v view) EncodedObjectSize(h plumbing.Hash) (int64, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	return v.storage.EncodedObjectSize(h)
+}
+
+// AddAlternate is part of the storer interface and is not something an
+// in-memory store can do; the storage it wraps refuses it too.
+func (v view) AddAlternate(remote string) error {
+	return v.storage.AddAlternate(remote)
 }
 
 // entries returns the entries of the tree at h, parsing the object only the
@@ -77,7 +148,7 @@ func (s *Store) remember(h plumbing.Hash, entries []object.TreeEntry) {
 
 // AddBlob stores content as a blob and returns its hash.
 func (s *Store) AddBlob(content []byte) (plumbing.Hash, error) {
-	obj := s.storage.NewEncodedObject()
+	obj := s.storer().NewEncodedObject()
 	obj.SetType(plumbing.BlobObject)
 	obj.SetSize(int64(len(content)))
 
@@ -92,7 +163,7 @@ func (s *Store) AddBlob(content []byte) (plumbing.Hash, error) {
 		return plumbing.ZeroHash, err
 	}
 
-	return s.storage.SetEncodedObject(obj)
+	return s.storer().SetEncodedObject(obj)
 }
 
 // AddTree stores entries as a tree object and returns its hash. The entries
@@ -106,12 +177,12 @@ func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
 
 	tree := &object.Tree{Entries: sorted}
 
-	obj := s.storage.NewEncodedObject()
+	obj := s.storer().NewEncodedObject()
 	if err := tree.Encode(obj); err != nil {
 		return plumbing.ZeroHash, err
 	}
 
-	hash, err := s.storage.SetEncodedObject(obj)
+	hash, err := s.storer().SetEncodedObject(obj)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -130,12 +201,12 @@ func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
 // instance cannot be shared between callers; [Store.entries] is the cached way
 // in for the walks that only want the entries.
 func (s *Store) Tree(h plumbing.Hash) (*object.Tree, error) {
-	obj, err := s.storage.EncodedObject(plumbing.TreeObject, h)
+	obj, err := s.storer().EncodedObject(plumbing.TreeObject, h)
 	if err != nil {
 		return nil, err
 	}
 
-	return object.DecodeTree(s.storage, obj)
+	return object.DecodeTree(s.storer(), obj)
 }
 
 // EncodePack writes the given objects to w as a packfile and returns the pack's
@@ -144,7 +215,7 @@ func (s *Store) Tree(h plumbing.Hash) (*object.Tree, error) {
 // any base object — which is what lets the client interpret the stream without
 // a store of its own.
 func (s *Store) EncodePack(w io.Writer, hashes []plumbing.Hash) (plumbing.Hash, error) {
-	return packfile.NewEncoder(w, s.storage, false).Encode(hashes, 0)
+	return packfile.NewEncoder(w, s.storer(), false).Encode(hashes, 0)
 }
 
 // ReplaceBlob rewrites the blob at the given slash-separated path under the
