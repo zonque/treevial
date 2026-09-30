@@ -36,7 +36,7 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `WithDeadPeerTimeout`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Option`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Head`, `Option`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
 | `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
@@ -373,7 +373,7 @@ if err != nil {
 }
 go srv.Serve(lis)
 
-srv.SetHead("refs/heads/printer-7/config", newRoot)   // pushes immediately
+srv.SetHead("refs/heads/printer-7/config", server.Head{Hash: newRoot})   // pushes immediately
 ```
 
 `demo/cmd/server` is a runnable server that does exactly this.
@@ -512,14 +512,14 @@ it missed, and a slow subscriber holds nobody else up.
 They are served from one prepared store. Reading it from several pushes at once
 is safe; writing to it while any of them is mid-transfer is not, and that is
 the one rule a provider has to keep. `Subscribers` is how to tell: when every
-entry for a ref reports `Synced` equal to `Head`, no push is in flight and the
-store can be rebuilt.
+entry for a ref reports `Synced` equal to `Head.Hash`, no push is in flight and
+the store can be rebuilt.
 
 ```go
 // Everyone following this ref has taken up its current head.
 func quiet(srv *server.Server, ref string) bool {
 	for _, sub := range srv.Subscribers() {
-		if sub.Ref == ref && sub.Synced != sub.Head {
+		if sub.Ref == ref && sub.Synced != sub.Head.Hash {
 			return false
 		}
 	}
@@ -556,7 +556,7 @@ that ref points, how far it has got, and what it has cost.
 ```go
 for _, sub := range srv.Subscribers() {
 	log.Printf("%-16s %-22s %s  synced %s  %d B sent",
-		sub.ClientID, sub.Addr, sub.Head, sub.Synced, sub.Sent)
+		sub.ClientID, sub.Addr, sub.Head.Hash, sub.Synced, sub.Sent)
 }
 ```
 
@@ -570,7 +570,7 @@ srv.Watch(server.WatcherFunc(func(e server.Event) {
 
 There are three kinds. `Subscribed` is a client joining a ref, once that ref's
 objects are ready. `Synced` is a client acknowledging a head it was pushed —
-when the event's `Synced` equals its `Head`, that client is up to date.
+when the event's `Synced` equals its `Head.Hash`, that client is up to date.
 `Unsubscribed` is a connection ending, however it ended.
 
 What a handler may rely on:
@@ -687,6 +687,87 @@ owning node for the delta from a hash this client acknowledged, possibly long
 ago. Whether that node still holds it is a retention question, and the answer
 decides whether the client is served incrementally or has to be resynchronised
 whole.
+
+A cluster that serves one client from several of its nodes at once wants the
+next section too: which of two heads is the newer is a question the objects
+cannot answer.
+
+## Saying which state is newer
+
+A head is a hash and, where something orders it, an ordinal:
+
+```go
+type Head struct {
+	Hash     plumbing.Hash
+	Sequence uint64
+}
+```
+
+The ordinal is there because the objects cannot supply one. treevial pushes
+trees, not commits — there is no parent pointer anywhere in the graph — so
+given two heads for one ref, nothing in the model says which came first.
+Content addressing gives identity, not order.
+
+That is enough for one server and not enough for a cluster, where an
+application runs several clients on purpose: one per switch, one per node, so
+that no single link can cut it off. Each follows the same ref on a different
+server, and those servers need not have applied the same entries. Without an
+ordinal the application cannot tell an arriving head that supersedes what it
+holds from one that is a step behind, and it flaps between them.
+
+The ordinal comes from whatever owns the ref — a log index, a revision the
+state machine keeps — and treevial requires one property of it:
+
+> **Per ref, it must increase whenever the head moves.**
+
+Nothing else about its value means anything here. Two consequences are worth
+stating, because getting them wrong is quiet rather than loud:
+
+- **It has to come out of the replicated state**, not a counter a node keeps
+  locally. A node that counts its own pushes agrees with its peers until one of
+  them restores from a snapshot.
+- **Equal ordinals mean equal heads; unequal ones need not mean unequal
+  heads.** With a log index used directly, two nodes at different indices hold
+  the same head for every ref the entries between them did not touch. So a
+  redundant pair comparing notes tests `Hash` for agreement and `Sequence` only
+  for ordering.
+
+A ref is ordered or it is not, and `Prepare` decides which by what it returns.
+An ordered ref moves only forward: `SetHead` reports `ErrNotAdvancing` for a
+head at a sequence the ref has reached, and moves nobody, so an apply that
+changed nothing costs nothing. A head of the other kind is refused outright,
+since ordering across a mixture has no answer. And a ref with no ordinal is
+checked against nothing, because there is nothing to check it against.
+
+```go
+if err := srv.SetHead(ref, server.Head{Hash: root, Sequence: index}); err != nil {
+	switch {
+	case errors.Is(err, server.ErrNoSubscribers):
+		// Nobody here follows this ref. Ordinary: a node applies
+		// entries for every ref it replicates.
+	case errors.Is(err, server.ErrNotAdvancing):
+		// A re-delivered entry, or one that moved some other ref.
+	default:
+		log.Printf("%s: %v", ref, err)
+	}
+}
+```
+
+The client reports what it was sent and nothing more:
+
+```go
+log.Printf("%s -> %s at %d, from %s", u.Ref, u.Hash, u.Sequence, u.ServerID)
+```
+
+**De-duplication is the application's.** One `Client` is one connection to one
+server, so nothing inside it compares connections; an application that dials
+several is what decides which arriving head wins. Two things to know when
+writing that, both of which cost a subscription if missed. `ApplySince(cfg,
+u.Graph, u.Previous, u.Hash)` is valid only while consecutive *applied* updates
+come from the same client — when the winning client changes, the baseline must
+be `plumbing.ZeroHash`, a full decode from that client's graph, which always
+holds everything reachable from the head it just pushed. And `receive.Graph` has
+no locking, so each client needs its own.
 
 ## Per-ref data, released by the last to leave
 

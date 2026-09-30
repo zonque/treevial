@@ -90,7 +90,7 @@ characters, and it is at most 128 bytes. It is a label, not a credential — a
 server can claim any name, exactly as a client can.
 
 ```
-update <hash> <object-count> [<origin-id>]
+update <hash> <object-count> [<key>=<value> ...]
 <pack data as pkt-lines>
 0000
 ```
@@ -99,11 +99,43 @@ update <hash> <object-count> [<origin-id>]
 many objects follow in decimal; it may be `0`, in which case the client is
 already current and the flush-pkt follows immediately.
 
-`<origin-id>` is optional and last: the name of the server the objects were
-fetched from, when this server did not serve them from its own store. Absent
-means the server named no origin, which covers both a push served from here and
-one forwarded by something that did not say where from. An empty field is not
-another way of saying absent, and is refused.
+Whatever follows the count is a **trailer**: a named field, `<key>=<value>`.
+Two are defined, and both are optional.
+
+| key | value |
+|---|---|
+| `seq` | the ordinal of the head this update carries, in decimal |
+| `origin` | the name of the server the objects were fetched from |
+
+They may appear in either order, and each may appear once. A value may itself
+contain `=`, so only the first one separates the key from the value:
+`origin=a=b` names the server `a=b`. A line carrying an unknown key, a
+repeated key, a key with no value or an empty one, or `seq=0`, is refused —
+a client that acted on half a line it did not understand would be worse than
+one that turned it away. A server with neither trailer to send writes three
+fields and stops.
+
+`seq` is how a client can tell which of two heads is the newer. The protocol
+carries trees, not commits, so there is no parent pointer anywhere in the
+object graph and nothing about two heads says which came first: content
+addressing gives identity, not order. The ordinal supplies what the objects
+cannot. It belongs to whatever owns the ref — a log index, a revision a state
+machine keeps — and one property is required of it: **per ref, it must
+increase whenever the head moves.** Nothing else about its value means
+anything. Absent says this server has nothing to order against, and zero is
+not another way of saying that.
+
+Ordering it gives, agreement it does not, quite: equal ordinals mean equal
+heads, while unequal ones need not mean unequal heads, since a server may be
+some entries behind on a log whose entries did not touch this ref.
+
+`origin` names where a push's objects came from, when the server did not serve
+them from its own store. Absent means the server named no origin, which covers
+both a push served from here and one forwarded by something that did not say
+where from.
+
+Neither trailer is a credential, and a client is served exactly the same
+whichever of them a server sends.
 
 The pack is a standard git packfile, split across as many pkt-lines as it takes
 and closed by a flush-pkt. It may be split at any point, so a reader has to
@@ -147,34 +179,36 @@ Had that client named itself `printer-7`, its first line would read
 `005cregister refs/heads/printer-7/config 0000…0000 printer-7` — the same line
 with one more field — and nothing else about the exchange would differ.
 
-Had the server been named `node-3`, and the second push been forwarded from a
-server called `node-5`, the same exchange would read:
+Had the server been named `node-3`, its refs ordered by a consensus layer, and
+the second push forwarded from a server called `node-5`, the same exchange
+would read:
 
 ```
 client → 0052register refs/heads/printer-7/config 0000000000000000000000000000000000000000
 server → 0012server node-3
-server → 0037update 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805 17
+server → 003eupdate 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805 17 seq=98
 server → 037a<886 bytes of pack>
 server → 0000
 client → 0031ack 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
 
          … the server's data changes, and it no longer owns the ref …
 
-server → 003dupdate 30e5ce8082820717b3fb5fec3e962c1d62103e14 4 node-5
+server → 004bupdate 30e5ce8082820717b3fb5fec3e962c1d62103e14 4 seq=99 origin=node-5
 server → 015f<347 bytes of pack>
 server → 0000
 client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
 ```
 
-The name costs 18 bytes once, on the connection rather than on any push: the
-first update is still the same 949 bytes it always was, and the second still
-409 plus the seven its origin adds.
+The server's name costs 18 bytes once, charged to the connection rather than to
+any push. The trailers are charged per push and cost seven bytes for `seq=98`
+and fourteen for `origin=node-5`, so the first update is 956 bytes here and the
+second 430.
 
 Seventeen objects the first time and four the second, because the four are all
 that moved: the second pack is 347 bytes against 886. Counting the lines in
-full — the update message, the headers, the flush-pkt — the first update is 949
-bytes on the wire and the second 409, which is what both ends report having
-exchanged.
+full — the update message, the headers, the flush-pkt — an update with no
+trailers is 949 bytes on the wire for the first push and 409 for the second,
+which is what both ends report having exchanged.
 
 ## Connection lifetime
 
@@ -192,7 +226,9 @@ need not know they exist. The only effect one can observe is the one any
 hang-up has: the connection ends.
 
 One connection carries at most one `server` line, since a server's name does
-not change while it is running.
+not change while it is running. A `seq` is decided per push, like an `origin`,
+so one connection may carry any number of them — but never a lower one after a
+higher one, since a ref that is ordered at all moves only forward.
 
 One connection carries one subscription, but a ref may have any number of
 subscribers: a second connection naming a ref somebody else is already

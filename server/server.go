@@ -19,6 +19,10 @@
 // from wherever the ref actually lives, which lets a cluster move a ref
 // between its nodes without the clients following it noticing anything.
 //
+// A ref's head is a hash and, where something orders it, an ordinal: see
+// [Head] for what that is for, and what a ref gains by having one — chiefly
+// that it then moves only forward.
+//
 // A server repository depends on this package and on
 // [github.com/zonque/treevial/objects]; it does not need the client side at
 // all.

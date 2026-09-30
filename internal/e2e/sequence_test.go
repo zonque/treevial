@@ -54,18 +54,24 @@ func TestASequencedRefOnlyMovesForward(t *testing.T) {
 
 	_, updates := h.subscribe(t, ctx, refA)
 
-	if first := nextUpdate(t, updates); first.Sequence != 1 {
+	first := nextUpdate(t, updates)
+	if first.Sequence != 1 {
 		t.Fatalf("first update carried sequence %d, want the prepared 1", first.Sequence)
 	}
+	waitForSync(t, h.server, refA, first.Hash)
 
+	// Both states are built now, while the ref is quiet: rebuilding a store
+	// while a push is reading it is the one thing a provider may not do.
+	// Only one of them is ever announced.
 	ahead := h.provider.retune(t, refA, 9000)
 	ahead.Sequence = 2
+
+	behind := h.provider.retune(t, refA, 1500)
 
 	if err := h.server.SetHead(refA, ahead); err != nil {
 		t.Fatalf("SetHead: %v", err)
 	}
-
-	behind := h.provider.retune(t, refA, 1500)
+	waitForSync(t, h.server, refA, ahead.Hash)
 
 	for _, tc := range []struct {
 		name string
@@ -135,7 +141,8 @@ func TestAHeadOfTheWrongKindIsRefused(t *testing.T) {
 			defer cancel()
 
 			_, updates := h.subscribe(t, ctx, refA)
-			nextUpdate(t, updates)
+			first := nextUpdate(t, updates)
+			waitForSync(t, h.server, refA, first.Hash)
 
 			before := h.server.Head(refA)
 
@@ -243,9 +250,11 @@ func TestAnUpdateCarriesTheHeadsSequence(t *testing.T) {
 
 	_, updates := h.subscribe(t, ctx, refA)
 
-	if got := nextUpdate(t, updates); got.Sequence != 1 {
-		t.Errorf("first update carried sequence %d, want 1", got.Sequence)
+	first := nextUpdate(t, updates)
+	if first.Sequence != 1 {
+		t.Errorf("first update carried sequence %d, want 1", first.Sequence)
 	}
+	waitForSync(t, h.server, refA, first.Hash)
 
 	next := h.provider.retune(t, refA, 9000)
 	next.Sequence = 2

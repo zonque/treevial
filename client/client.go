@@ -14,9 +14,13 @@
 // given up on.
 //
 // A client is told the name of the server it reached, if that server has one,
-// and the name of wherever a forwarded push's objects came from. Both arrive
-// on every [Update] as labels to log; nothing is decided by either, and
-// neither is checked.
+// the name of wherever a forwarded push's objects came from, and the ordinal of
+// the state it was pushed. All three arrive on every [Update]; nothing here is
+// decided by any of them.
+//
+// One client is one connection to one server. An application that dials
+// several of them for redundancy is what compares their ordinals and decides
+// which arriving head supersedes which — see [Update.Sequence].
 //
 // A client repository depends on this package and on
 // [github.com/zonque/treevial/receive]; it does not need the server side at
