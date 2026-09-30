@@ -299,6 +299,13 @@ func (st *refState) moveHead(head Head) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	return st.move(head)
+}
+
+// move is moveHead with the ref's lock already held, so that a caller which
+// has other things to do under it — installing a store alongside the head —
+// does them in the same breath.
+func (st *refState) move(head Head) (bool, error) {
 	if !st.installed {
 		st.head = head
 		st.sequenced = head.Sequence != 0
@@ -307,10 +314,8 @@ func (st *refState) moveHead(head Head) (bool, error) {
 		return true, nil
 	}
 
-	if st.sequenced != (head.Sequence != 0) {
-		return false, treevial.Errorf(treevial.CodeInvalid,
-			"a %s head on a %s ref: ordering across a mixture is undefined",
-			kind(head.Sequence != 0), kind(st.sequenced))
+	if err := st.allows(head); err != nil {
+		return false, err
 	}
 
 	if st.sequenced && head.Sequence <= st.head.Sequence {
@@ -320,6 +325,49 @@ func (st *refState) moveHead(head Head) (bool, error) {
 	st.head = head
 
 	return true, nil
+}
+
+// allows reports why head could not move this ref, or nil if it could — which
+// covers a head that is simply not newer, since that is not an error in every
+// caller's eyes. The caller holds st.mu.
+func (st *refState) allows(head Head) error {
+	if st.installed && st.sequenced != (head.Sequence != 0) {
+		return treevial.Errorf(treevial.CodeInvalid,
+			"a %s head on a %s ref: ordering across a mixture is undefined",
+			kind(head.Sequence != 0), kind(st.sequenced))
+	}
+
+	return nil
+}
+
+// wouldMove reports whether head is one this ref would take, without taking
+// it: what [Server.Sweep] asks of every named head before it installs any of
+// them.
+func (st *refState) wouldMove(head Head) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if err := st.allows(head); err != nil {
+		return err
+	}
+
+	if st.installed && st.sequenced && head.Sequence <= st.head.Sequence {
+		return ErrNotAdvancing
+	}
+
+	return nil
+}
+
+// install puts the objects and the head in place together, and says whether
+// the head moved. A sweep replaces a ref's store whether or not its head
+// moves, so the two are not the same question.
+func (st *refState) install(store *objects.Store, head Head) (bool, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.store = store
+
+	return st.move(head)
 }
 
 // kind names what moveHead refused, so its message reads as a sentence.
@@ -723,6 +771,116 @@ func (s *Server) Publish(ref string, store *objects.Store, head Head) error {
 	close(st.ready)
 
 	return nil
+}
+
+// Sweep installs a compacted store and a new set of heads in one step, and
+// reports how many subscribers lost the state they were holding.
+//
+// This is the moment at which the objects behind state that has been replaced
+// in bulk are reclaimed. [github.com/zonque/treevial/objects.Store.Compact]
+// makes the store, keeping what the surviving heads reach, and this puts it in
+// place for every published ref. What the new store does not hold is freed
+// once the last push still reading the old one is done.
+//
+// heads names only the refs whose heads move, and a zero Hash is a ref whose
+// state is gone: its subscribers are told so and stay subscribed. Every other
+// published ref keeps the head it has, which is why a sweep must leave those
+// heads reachable in the new store too.
+//
+// Nothing changes unless everything checks out: every named ref is published,
+// every resulting non-zero head is present in the new store, and every named
+// head advances its ref. A sweep that would leave a ref with a head its store
+// cannot serve is refused with the world exactly as it was — which is what
+// turns forgetting to retain a surviving ref's head into an error rather than
+// a handful of dead subscriptions.
+//
+// Subscribers are not disturbed for nothing: one whose ref did not move and
+// whose tree the new store still holds is not woken at all. One whose tree is
+// gone has its baseline reset and is sent its ref's whole tree.
+//
+// Every builder writing into the old store must be retargeted afterwards —
+// [github.com/zonque/treevial/structtree.Builder.Retarget] — whether or not
+// its ref moved, since the store is replaced for all of them.
+//
+// Provider-backed refs are untouched: their stores came from
+// [Provider.Prepare] and are that provider's business.
+func (s *Server) Sweep(store *objects.Store, heads map[string]Head) (int, error) {
+	if store == nil {
+		return 0, treevial.Errorf(treevial.CodeInvalid, "sweep: a nil store")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for ref := range heads {
+		st, held := s.refs[ref]
+
+		switch {
+		case !held || st.retiring:
+			return 0, fmt.Errorf("sweep %q: %w", ref, ErrUnknownRef)
+		case !st.published:
+			return 0, fmt.Errorf("sweep %q: %w", ref, ErrNotPublished)
+		}
+	}
+
+	published := map[string]*refState{}
+	for ref, st := range s.refs {
+		if st.published {
+			published[ref] = st
+		}
+	}
+
+	// Checked in full before anything is installed.
+	for ref, st := range published {
+		head, named := heads[ref]
+		if !named {
+			head = st.currentHead()
+		}
+
+		if !head.Hash.IsZero() && !store.Has(head.Hash) {
+			return 0, treevial.Errorf(treevial.CodeInvalid,
+				"sweep %q: the new store does not hold %s", ref, head.Hash)
+		}
+
+		if named {
+			if err := st.wouldMove(head); err != nil {
+				return 0, fmt.Errorf("sweep %q: %w", ref, err)
+			}
+		}
+	}
+
+	reset := 0
+
+	for ref, st := range published {
+		head, named := heads[ref]
+
+		var moved bool
+
+		if named {
+			// The head was checked above, so this cannot refuse.
+			moved, _ = st.install(store, head)
+		} else {
+			st.setStore(store)
+		}
+
+		for c := range st.members {
+			// A subscriber holding nothing has nothing to lose, and is
+			// already on its way to being sent everything.
+			held := c.held()
+			dropped := !held.IsZero() && !store.Has(held)
+
+			if dropped {
+				c.reset()
+				reset++
+			}
+
+			if moved || dropped {
+				c.wake()
+			}
+		}
+	}
+
+	return reset, nil
 }
 
 // Unpublish gives up a ref the application published, and ends the
