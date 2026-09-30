@@ -17,6 +17,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/memory"
+
+	"github.com/zonque/treevial/internal/packread"
 )
 
 // Store keeps git objects in memory. It is the server's view of the object
@@ -129,7 +131,7 @@ func (s *Store) entries(h plumbing.Hash) ([]object.TreeEntry, error) {
 		return cached, nil
 	}
 
-	tree, err := s.Tree(h)
+	tree, err := s.TreeObject(h)
 	if err != nil {
 		return nil, err
 	}
@@ -194,13 +196,13 @@ func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
 	return hash, nil
 }
 
-// Tree decodes the tree object at h.
+// TreeObject decodes the tree object at h.
 //
 // This parses the object every time. It hands back go-git's own *object.Tree,
 // which carries a storer and builds an index of its own as it is used, so one
-// instance cannot be shared between callers; [Store.entries] is the cached way
-// in for the walks that only want the entries.
-func (s *Store) Tree(h plumbing.Hash) (*object.Tree, error) {
+// instance cannot be shared between callers; [Store.Tree] is the cached way in
+// for the callers that only want the entries.
+func (s *Store) TreeObject(h plumbing.Hash) (*object.Tree, error) {
 	obj, err := s.storer().EncodedObject(plumbing.TreeObject, h)
 	if err != nil {
 		return nil, err
@@ -216,6 +218,108 @@ func (s *Store) Tree(h plumbing.Hash) (*object.Tree, error) {
 // a store of its own.
 func (s *Store) EncodePack(w io.Writer, hashes []plumbing.Hash) (plumbing.Hash, error) {
 	return packfile.NewEncoder(w, s.storer(), false).Encode(hashes, 0)
+}
+
+// Tree returns the entries of the tree at h, and whether this store has it.
+//
+// This is the shape a structtree source asks for, so a whole value can be
+// decoded straight out of a store — which is what a restored snapshot needs
+// before it can be built on again.
+func (s *Store) Tree(h plumbing.Hash) ([]object.TreeEntry, bool) {
+	entries, err := s.entries(h)
+	if err != nil {
+		return nil, false
+	}
+
+	return entries, true
+}
+
+// Blob returns the content of the blob at h, and whether this store has it.
+// The slice is the caller's; nothing else holds it.
+func (s *Store) Blob(h plumbing.Hash) ([]byte, bool) {
+	obj, err := s.storer().EncodedObject(plumbing.BlobObject, h)
+	if err != nil {
+		return nil, false
+	}
+
+	r, err := obj.Reader()
+	if err != nil {
+		return nil, false
+	}
+	defer r.Close()
+
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return nil, false
+	}
+
+	return content, true
+}
+
+// LoadPack adds every object a packfile carries to the store, and returns how
+// many it added.
+//
+// This is the receiving half of [Store.EncodePack]: together they move a whole
+// graph from one store to another, which is what a snapshot and its restore
+// are. Nothing is assumed about the order the objects arrive in — a tree may
+// be stored before anything beneath it, since storing one only records its
+// entries.
+//
+// Each object is checked against the hash it arrived under. The pack's own
+// checksum is what catches corruption; this catches the one thing that
+// checksum cannot, which is a tree whose entries are not in git's canonical
+// order. [Store.AddTree] sorts before hashing, so such a tree would be stored
+// under a hash its sender never used, and a store that disagreed with the
+// sender about its own hashes would be worse than a refusal.
+func (s *Store) LoadPack(r io.Reader) (int, error) {
+	l := &loader{store: s}
+
+	if err := packread.Scan(r, l); err != nil {
+		return l.loaded, err
+	}
+
+	return l.loaded, nil
+}
+
+// loader puts what a pack carries into a store.
+type loader struct {
+	store  *Store
+	loaded int
+}
+
+func (l *loader) OnPackHeader(uint32) error { return nil }
+
+func (l *loader) OnBlob(h plumbing.Hash, content []byte) error {
+	// The handler's content is reused once this returns, and AddBlob copies
+	// it into the object it stores.
+	got, err := l.store.AddBlob(content)
+	if err != nil {
+		return err
+	}
+
+	return l.check(h, got)
+}
+
+func (l *loader) OnTree(h plumbing.Hash, entries []object.TreeEntry) error {
+	got, err := l.store.AddTree(entries)
+	if err != nil {
+		return err
+	}
+
+	return l.check(h, got)
+}
+
+func (l *loader) OnPackFooter(plumbing.Hash) error { return nil }
+
+// check confirms an object was stored under the hash it arrived under.
+func (l *loader) check(arrived, stored plumbing.Hash) error {
+	if stored != arrived {
+		return fmt.Errorf("pack carries %s but this store puts it at %s", arrived, stored)
+	}
+
+	l.loaded++
+
+	return nil
 }
 
 // ReplaceBlob rewrites the blob at the given slash-separated path under the

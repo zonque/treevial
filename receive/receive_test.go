@@ -150,13 +150,13 @@ func TestInterpretHandsOverContentMatchingTheSource(t *testing.T) {
 		t.Fatalf("Interpret: %v", err)
 	}
 
-	tree, err := s.Tree(root)
-	if err != nil {
-		t.Fatalf("Tree: %v", err)
+	entries, ok := s.Tree(root)
+	if !ok {
+		t.Fatal("the source store does not hold the root it built")
 	}
 
 	var audio plumbing.Hash
-	for _, e := range tree.Entries {
+	for _, e := range entries {
 		if e.Name == "Audio" {
 			audio = e.Hash
 		}
@@ -165,13 +165,13 @@ func TestInterpretHandsOverContentMatchingTheSource(t *testing.T) {
 		t.Fatal("the Audio subtree is missing")
 	}
 
-	gain, err := s.Tree(audio)
-	if err != nil {
-		t.Fatalf("Tree: %v", err)
+	gain, ok := s.Tree(audio)
+	if !ok {
+		t.Fatalf("the source store does not hold %s", audio)
 	}
 
 	var gainHash plumbing.Hash
-	for _, e := range gain.Entries {
+	for _, e := range gain {
 		if e.Name == "Gain" {
 			gainHash = e.Hash
 		}

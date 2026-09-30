@@ -1,6 +1,7 @@
 package structtree_test
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -225,4 +226,63 @@ func contains(s, sub string) bool {
 	}
 
 	return false
+}
+
+// A store is a Source, which is what lets the objects of a restored snapshot
+// be decoded back into the value they were built from.
+var _ structtree.Source = (*objects.Store)(nil)
+
+// The restore a snapshot performs, end to end: objects in, the Go value out of
+// them, one full rebuild, and a root that has to match what the snapshot
+// named. Determinism is what makes that last step an assertion rather than a
+// hope.
+func TestAValueSurvivesAStoreRoundTrip(t *testing.T) {
+	from := objects.NewStore()
+
+	original := sampleConfig()
+
+	builder, err := structtree.NewBuilder(from, original)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	root, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	hashes, err := from.SelectSince(plumbing.ZeroHash, root)
+	if err != nil {
+		t.Fatalf("SelectSince: %v", err)
+	}
+
+	var pack bytes.Buffer
+	if _, err := from.EncodePack(&pack, hashes); err != nil {
+		t.Fatalf("EncodePack: %v", err)
+	}
+
+	// The restoring side has the pack, the root, and nothing else.
+	into := objects.NewStore()
+	if _, err := into.LoadPack(&pack); err != nil {
+		t.Fatalf("LoadPack: %v", err)
+	}
+
+	restored := &config{}
+	if err := structtree.ApplySince(restored, into, plumbing.ZeroHash, root); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	rebuilder, err := structtree.NewBuilder(into, restored)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	got, err := rebuilder.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if got != root {
+		t.Errorf("the restored value rebuilt to %s, want the %s the snapshot named", got, root)
+	}
 }

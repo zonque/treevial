@@ -17,13 +17,12 @@
 package receive
 
 import (
-	"bytes"
-	"fmt"
 	"io"
 
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/zonque/treevial/internal/packread"
 )
 
 // Handler receives the objects of a packfile in stream order.
@@ -31,8 +30,8 @@ import (
 // go-git's packfile.Parser has an Observer interface with a similar shape, but
 // it always passes nil object content (parser.go calls
 // onInflatedObjectContent with a nil buffer) and it needs a storer to resolve
-// deltas. Interpret therefore drives packfile.Scanner directly, which yields
-// the inflated bytes and requires no storage at all.
+// deltas. The reading beneath [Interpret] therefore drives packfile.Scanner
+// directly, which yields the inflated bytes and requires no storage at all.
 type Handler interface {
 	// OnPackHeader reports how many objects the pack declares.
 	OnPackHeader(count uint32) error
@@ -49,71 +48,5 @@ type Handler interface {
 // inflated. Only blobs and trees are expected: the sender encodes without
 // deltas, and treevial transfers no commits or tags.
 func Interpret(r io.Reader, h Handler) error {
-	scanner := packfile.NewScanner(r)
-
-	_, count, err := scanner.Header()
-	if err != nil {
-		return fmt.Errorf("read pack header: %w", err)
-	}
-
-	if err := h.OnPackHeader(count); err != nil {
-		return err
-	}
-
-	var buf bytes.Buffer
-
-	for i := range count {
-		oh, err := scanner.NextObjectHeader()
-		if err != nil {
-			return fmt.Errorf("read object %d header: %w", i, err)
-		}
-
-		buf.Reset()
-		if _, _, err := scanner.NextObject(&buf); err != nil {
-			return fmt.Errorf("inflate object %d: %w", i, err)
-		}
-
-		hash := plumbing.ComputeHash(oh.Type, buf.Bytes())
-
-		switch oh.Type {
-		case plumbing.BlobObject:
-			if err := h.OnBlob(hash, buf.Bytes()); err != nil {
-				return err
-			}
-		case plumbing.TreeObject:
-			entries, err := decodeTreeEntries(buf.Bytes())
-			if err != nil {
-				return fmt.Errorf("decode tree %s: %w", hash, err)
-			}
-			if err := h.OnTree(hash, entries); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("object %d: unexpected type %s", i, oh.Type)
-		}
-	}
-
-	checksum, err := scanner.Checksum()
-	if err != nil {
-		return fmt.Errorf("read pack checksum: %w", err)
-	}
-
-	return h.OnPackFooter(checksum)
-}
-
-// decodeTreeEntries parses a tree object's body without storing it.
-func decodeTreeEntries(content []byte) ([]object.TreeEntry, error) {
-	obj := &plumbing.MemoryObject{}
-	obj.SetType(plumbing.TreeObject)
-
-	if _, err := obj.Write(content); err != nil {
-		return nil, err
-	}
-
-	tree := &object.Tree{}
-	if err := tree.Decode(obj); err != nil {
-		return nil, err
-	}
-
-	return tree.Entries, nil
+	return packread.Scan(r, h)
 }
