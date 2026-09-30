@@ -36,8 +36,8 @@ func TestSubscriptionSurvivesAQuietStretch(t *testing.T) {
 	}
 
 	second := nextUpdate(t, updates)
-	if second.Hash != v2 {
-		t.Errorf("second update hash %s, want %s", second.Hash, v2)
+	if second.Hash != v2.Hash {
+		t.Errorf("second update hash %s, want %s", second.Hash, v2.Hash)
 	}
 	if err := c.Err(); err != nil {
 		t.Errorf("client error after second push: %v", err)

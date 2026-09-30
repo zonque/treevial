@@ -30,8 +30,8 @@ func TestRetuneMatchesAFullRebuild(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	if got != want {
-		t.Errorf("retuned tree %s, want %s", got, want)
+	if got.Hash != want {
+		t.Errorf("retuned tree %s, want %s", got.Hash, want)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestRetuneWritesOnlyThePathsObjects(t *testing.T) {
 		t.Fatalf("Retune: %v", err)
 	}
 
-	fresh, err := store.SelectSince(before, after)
+	fresh, err := store.SelectSince(before.Hash, after.Hash)
 	if err != nil {
 		t.Fatalf("SelectSince: %v", err)
 	}

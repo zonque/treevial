@@ -171,14 +171,14 @@ func quietRefs(srv *server.Server) map[string]quiet {
 	for _, sub := range srv.Subscribers() {
 		t, following := refs[sub.Ref]
 		if !following {
-			t = &tally{state: quiet{head: sub.Head}}
+			t = &tally{state: quiet{head: sub.Head.Hash}}
 			refs[sub.Ref] = t
 		}
 
 		t.state.subscribers++
 		t.state.sent += sub.Sent
 
-		if sub.Synced.IsZero() || sub.Synced != sub.Head {
+		if sub.Synced.IsZero() || sub.Synced != sub.Head.Hash {
 			t.behind = true
 		}
 	}
@@ -245,7 +245,7 @@ func (t *tracker) mutateOnce(ref string) {
 		return
 	}
 
-	log.Printf("[%s] moving -> %s and pushing to %d subscriber(s)", ref, next, state.subscribers)
+	log.Printf("[%s] moving -> %s and pushing to %d subscriber(s)", ref, next.Hash, state.subscribers)
 
 	if err := t.srv.SetHead(ref, next); err != nil {
 		log.Printf("[%s] set head: %v", ref, err)
@@ -253,7 +253,7 @@ func (t *tracker) mutateOnce(ref string) {
 		return
 	}
 
-	t.reportCost(ref, next, state.sent)
+	t.reportCost(ref, next.Hash, state.sent)
 }
 
 // reportCost waits for every subscriber to acknowledge the new head and then

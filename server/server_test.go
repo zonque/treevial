@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,13 +13,41 @@ import (
 	"github.com/zonque/treevial/server"
 )
 
+var someHash = plumbing.NewHash("35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805")
+
 type stubProvider struct{}
 
-func (stubProvider) Prepare(string) (*objects.Store, plumbing.Hash, error) {
-	return objects.NewStore(), plumbing.ZeroHash, nil
+func (stubProvider) Prepare(string) (*objects.Store, server.Head, error) {
+	return objects.NewStore(), server.Head{}, nil
 }
 
 func (stubProvider) Release(string) {}
+
+func TestHeadIsUnknownForARefNobodyFollows(t *testing.T) {
+	srv, err := server.New(stubProvider{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if got := srv.Head("refs/heads/nobody/config"); got != (server.Head{}) {
+		t.Errorf("Head() = %+v, want the zero Head", got)
+	}
+}
+
+// A node applies entries for every ref it replicates while only some of them
+// have subscribers here, so this is ordinary traffic and has to be testable
+// without matching on the text of an error.
+func TestSetHeadReportsThatNobodyIsSubscribed(t *testing.T) {
+	srv, err := server.New(stubProvider{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = srv.SetHead("refs/heads/nobody/config", server.Head{Hash: someHash, Sequence: 1})
+	if !errors.Is(err, server.ErrNoSubscribers) {
+		t.Errorf("SetHead = %v, want ErrNoSubscribers", err)
+	}
+}
 
 func TestNewRefusesAnUnusableID(t *testing.T) {
 	for _, id := range []string{

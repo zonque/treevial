@@ -41,6 +41,41 @@ import (
 	"github.com/zonque/treevial/objects"
 )
 
+// Head is where a ref points, and — behind a consensus layer — which state
+// that is.
+//
+// Sequence is an ordinal supplied by whatever owns the ref: a log index, or a
+// revision its state machine keeps. treevial requires one property of it and
+// checks exactly that one — per ref, it must increase whenever the head moves
+// — and derives nothing else from its value. It must therefore come out of the
+// replicated state rather than from a counter a node keeps locally: a node
+// that counts its own pushes agrees with its peers until one of them restores
+// from a snapshot, and never again after.
+//
+// A zero Sequence means the ref is unsequenced, which is what a server with
+// nothing to order against uses. Such a ref behaves exactly as every ref did
+// before sequences existed, and nothing about one is written on the wire.
+//
+// Equal sequences mean equal heads. Unequal sequences do not mean unequal
+// heads: with a log index used directly, two nodes at different indices hold
+// the same head for every ref the entries between them did not touch. So an
+// application comparing two of its clients tests Hash for agreement and
+// Sequence only for ordering.
+type Head struct {
+	Hash     plumbing.Hash
+	Sequence uint64
+}
+
+// Errors reported by [Server.SetHead]. Both happen in the ordinary running of
+// a cluster, so both are named rather than left to be matched on text: a node
+// applies entries for every ref it replicates while only some of them have
+// subscribers here, and a head that has already been passed is what a
+// re-delivered entry carries.
+var (
+	ErrNoSubscribers = errors.New("treevial/server: nobody is subscribed to that ref")
+	ErrNotAdvancing  = errors.New("treevial/server: head does not advance")
+)
+
 // Provider supplies and disposes of the objects behind one ref. The server owns
 // neither: it asks for a ref's data when the first client subscribes to it, and
 // hands it back once the last one has disconnected.
@@ -56,8 +91,13 @@ import (
 // server only checks that it is a usable ref name.
 type Provider interface {
 	// Prepare builds the objects behind ref and returns the store holding
-	// them together with the hash the ref points at.
-	Prepare(ref string) (*objects.Store, plumbing.Hash, error)
+	// them together with the head the ref points at.
+	//
+	// That head must be reachable in the store returned alongside it, and
+	// so must every head later given to [Server.SetHead] for this ref: the
+	// server works out a subscriber's objects from it, and one that is not
+	// there refuses the subscriber rather than merely leaving it behind.
+	Prepare(ref string) (*objects.Store, Head, error)
 	// Release is called once, after the last subscriber to ref has
 	// disconnected, so whatever Prepare set up can be dropped.
 	Release(ref string)
@@ -77,9 +117,9 @@ type Subscription struct {
 	// Addr is where the subscriber connected from, which is what tells two
 	// subscribers of one ref apart even when they are named alike.
 	Addr string
-	// Head is the hash that ref points at. Subscribers of one ref all see
-	// the same head; what differs is how much of it they have taken up.
-	Head plumbing.Hash
+	// Head is where ref points. Subscribers of one ref all see the same
+	// head; what differs is how much of it they have taken up.
+	Head Head
 	// Synced is the hash the subscriber has confirmed it fully interpreted,
 	// or the zero hash if it has not caught up yet.
 	Synced plumbing.Hash
@@ -248,7 +288,7 @@ type refState struct {
 	members  map[*subscriber]struct{}
 
 	mu   sync.Mutex
-	head plumbing.Hash
+	head Head
 }
 
 func newRefState() *refState {
@@ -259,7 +299,7 @@ func newRefState() *refState {
 	}
 }
 
-func (st *refState) currentHead() plumbing.Hash {
+func (st *refState) currentHead() Head {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -268,11 +308,11 @@ func (st *refState) currentHead() plumbing.Hash {
 
 // setHead moves the ref. Every subscriber following it is behind until it says
 // otherwise.
-func (st *refState) setHead(hash plumbing.Hash) {
+func (st *refState) setHead(head Head) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	st.head = hash
+	st.head = head
 }
 
 // subscriber is one connected client. Its whole state is the hash it last
@@ -594,7 +634,7 @@ func (s *Server) Stop() {
 // Every subscriber to the ref moves. What each is sent is worked out from what
 // it has acknowledged, so one that is several moves behind is brought up to the
 // current head in one go rather than walked through the states it missed.
-func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
+func (s *Server) SetHead(ref string, head Head) error {
 	s.mu.Lock()
 	st, ok := s.living(ref)
 
@@ -608,10 +648,10 @@ func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 	s.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("nobody is subscribed to %q", ref)
+		return fmt.Errorf("set head of %q: %w", ref, ErrNoSubscribers)
 	}
 
-	st.setHead(hash)
+	st.setHead(head)
 
 	for _, c := range following {
 		c.wake()
@@ -620,15 +660,15 @@ func (s *Server) SetHead(ref string, hash plumbing.Hash) error {
 	return nil
 }
 
-// Head returns the hash ref points at, or the zero hash if nobody is
-// subscribed to it.
-func (s *Server) Head(ref string) plumbing.Hash {
+// Head returns where ref points, or the zero [Head] if nobody is subscribed to
+// it.
+func (s *Server) Head(ref string) Head {
 	s.mu.Lock()
 	st, ok := s.living(ref)
 	s.mu.Unlock()
 
 	if !ok {
-		return plumbing.ZeroHash
+		return Head{}
 	}
 
 	return st.currentHead()
@@ -772,7 +812,7 @@ func (s *Server) serve(ctx context.Context, conn *wire.Conn, addr string) error 
 			return err
 		}
 
-		if err := awaitAck(c, pending, acks, recvErr); err != nil {
+		if err := awaitAck(c, pending.Hash, acks, recvErr); err != nil {
 			return err
 		}
 
@@ -980,22 +1020,22 @@ func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recv
 // Where the objects come from is asked afresh every time, so a server that has
 // just stopped owning a ref — or just started — serves the next push
 // accordingly, on the connection it already has.
-func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, hash plumbing.Hash) error {
-	pack, err := s.fetch(ctx, c, hash)
+func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, head Head) error {
+	pack, err := s.fetch(ctx, c, head.Hash)
 	if err != nil {
 		return err
 	}
 
 	if pack != nil {
-		return sendPack(conn, hash, pack)
+		return sendPack(conn, head, pack)
 	}
 
-	missing, err := c.state.store.SelectSince(c.held(), hash)
+	missing, err := c.state.store.SelectSince(c.held(), head.Hash)
 	if err != nil {
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
 
-	if err := conn.WriteUpdate(hash, len(missing), 0, ""); err != nil {
+	if err := conn.WriteUpdate(head.Hash, len(missing), head.Sequence, ""); err != nil {
 		return err
 	}
 
@@ -1046,7 +1086,7 @@ func (s *Server) fetch(ctx context.Context, c *subscriber, hash plumbing.Hash) (
 // sendPack writes a pack that came from somewhere else, framed by this server
 // as though it had encoded it: the client cannot tell the difference, and the
 // protocol does not know there is one.
-func sendPack(conn *wire.Conn, hash plumbing.Hash, pack *Pack) error {
+func sendPack(conn *wire.Conn, head Head, pack *Pack) error {
 	if closer, ok := pack.Body.(io.Closer); ok {
 		defer closer.Close()
 	}
@@ -1066,7 +1106,7 @@ func sendPack(conn *wire.Conn, hash plumbing.Hash, pack *Pack) error {
 		return treevial.Errorf(treevial.CodeInternal, "forwarded pack: %v", err)
 	}
 
-	if err := conn.WriteUpdate(hash, pack.Objects, 0, pack.OriginID); err != nil {
+	if err := conn.WriteUpdate(head.Hash, pack.Objects, head.Sequence, pack.OriginID); err != nil {
 		return err
 	}
 

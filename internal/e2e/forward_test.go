@@ -28,7 +28,7 @@ type elsewhere struct {
 	store   *objects.Store
 	config  *shared.Config
 	builder *structtree.Builder
-	head    plumbing.Hash
+	head    server.Head
 }
 
 func newElsewhere(t *testing.T, ref string) *elsewhere {
@@ -42,27 +42,29 @@ func newElsewhere(t *testing.T, ref string) *elsewhere {
 	}
 	e.builder = builder
 
-	if e.head, err = builder.Build(); err != nil {
+	root, err := builder.Build()
+	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	e.head = server.Head{Hash: root}
 
 	return e
 }
 
 // move changes one field, the way the owning node would, and returns the head
 // its consensus layer would then tell the others about.
-func (e *elsewhere) move(t *testing.T, mtu int) plumbing.Hash {
+func (e *elsewhere) move(t *testing.T, mtu int) server.Head {
 	t.Helper()
 
 	e.config.Network.Primary.MTU = mtu
 
-	head, err := e.builder.Build(&e.config.Network.Primary.MTU)
+	root, err := e.builder.Build(&e.config.Network.Primary.MTU)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	e.head = head
+	e.head = server.Head{Hash: root}
 
-	return head
+	return e.head
 }
 
 // pack answers what a forwarded push asks for, which is what the owning node
@@ -168,10 +170,10 @@ func (f *forwarder) pushes() []plumbing.Hash {
 type stubProvider struct {
 	mu    sync.Mutex
 	store *objects.Store
-	head  plumbing.Hash
+	head  server.Head
 }
 
-func (p *stubProvider) Prepare(string) (*objects.Store, plumbing.Hash, error) {
+func (p *stubProvider) Prepare(string) (*objects.Store, server.Head, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -213,8 +215,8 @@ func TestAServerWithNoObjectsServesAClientFromElsewhere(t *testing.T) {
 
 	u := nextUpdate(t, updates)
 
-	if u.Hash != remote.head {
-		t.Errorf("client was served %s, want %s", u.Hash, remote.head)
+	if u.Hash != remote.head.Hash {
+		t.Errorf("client was served %s, want %s", u.Hash, remote.head.Hash)
 	}
 	if want := 17; u.ObjectCount != want {
 		t.Errorf("client was sent %d objects, want %d", u.ObjectCount, want)
@@ -293,8 +295,8 @@ func TestWhereAPushIsServedFromIsDecidedEveryTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if local2 != second {
-		t.Fatalf("the two nodes built different trees: %s and %s", local2, second)
+	if local2 != second.Hash {
+		t.Fatalf("the two nodes built different trees: %s and %s", local2, second.Hash)
 	}
 
 	if err := srv.SetHead(refA, second); err != nil {
@@ -327,8 +329,8 @@ func TestWhereAPushIsServedFromIsDecidedEveryTime(t *testing.T) {
 	if len(forwarded) != 2 {
 		t.Fatalf("%d pushes were forwarded, want 2", len(forwarded))
 	}
-	if forwarded[0] != first.Hash || forwarded[1] != third {
-		t.Errorf("forwarded %v, want the first and third heads (%s, %s)", forwarded, first.Hash, third)
+	if forwarded[0] != first.Hash || forwarded[1] != third.Hash {
+		t.Errorf("forwarded %v, want the first and third heads (%s, %s)", forwarded, first.Hash, third.Hash)
 	}
 }
 
@@ -382,7 +384,7 @@ func TestAnEmptyForwardedPackSaysThereIsNothingToSend(t *testing.T) {
 	}
 	defer c.Close()
 
-	updates, err := c.Resume(ctx, refA, remote.head, receive.NewGraph())
+	updates, err := c.Resume(ctx, refA, remote.head.Hash, receive.NewGraph())
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -392,8 +394,8 @@ func TestAnEmptyForwardedPackSaysThereIsNothingToSend(t *testing.T) {
 	if u.ObjectCount != 0 {
 		t.Errorf("client was sent %d objects, want none", u.ObjectCount)
 	}
-	if u.Hash != remote.head {
-		t.Errorf("client was told %s, want %s", u.Hash, remote.head)
+	if u.Hash != remote.head.Hash {
+		t.Errorf("client was told %s, want %s", u.Hash, remote.head.Hash)
 	}
 }
 

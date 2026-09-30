@@ -6,10 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-git/go-git/v5/plumbing"
-
 	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
+	"github.com/zonque/treevial/server"
 	"github.com/zonque/treevial/structtree"
 )
 
@@ -48,19 +47,19 @@ func name(ref string) string {
 }
 
 // Prepare implements server.Provider.
-func (p *demoProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+func (p *demoProvider) Prepare(ref string) (*objects.Store, server.Head, error) {
 	data := &refData{config: shared.Example(name(ref)), store: objects.NewStore()}
 
 	builder, err := structtree.NewBuilder(data.store, data.config)
 	if err != nil {
-		return nil, plumbing.ZeroHash, err
+		return nil, server.Head{}, err
 	}
 	data.builder = builder
 
 	// The first build has everything to do.
 	root, err := builder.Build()
 	if err != nil {
-		return nil, plumbing.ZeroHash, err
+		return nil, server.Head{}, err
 	}
 
 	p.mu.Lock()
@@ -71,7 +70,7 @@ func (p *demoProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error
 	log.Printf("[%s] prepared -> %s, %d leaves walked from the struct (%d refs held)",
 		ref, root, shared.LeafCount, held)
 
-	return data.store, root, nil
+	return data.store, server.Head{Hash: root}, nil
 }
 
 // Release implements server.Provider.
@@ -96,16 +95,23 @@ func (p *demoProvider) Release(ref string) {
 // hashes that leaf alone and reuses the hashes it already holds for the rest.
 // Only the blob for that field and the trees above it are new, so the push that
 // follows is tiny — and so is the work behind it.
-func (p *demoProvider) Retune(ref string) (plumbing.Hash, error) {
+func (p *demoProvider) Retune(ref string) (server.Head, error) {
 	p.mu.Lock()
 	data, ok := p.held[ref]
 	p.mu.Unlock()
 
 	if !ok {
-		return plumbing.ZeroHash, fmt.Errorf("%q is gone", ref)
+		return server.Head{}, fmt.Errorf("%q is gone", ref)
 	}
 
 	data.config.Network.Primary.MTU = 9000
 
-	return data.builder.Build(&data.config.Network.Primary.MTU)
+	root, err := data.builder.Build(&data.config.Network.Primary.MTU)
+	if err != nil {
+		return server.Head{}, err
+	}
+
+	// This server has no consensus layer behind it, so its refs are
+	// unsequenced: there is nothing to order them against.
+	return server.Head{Hash: root}, nil
 }

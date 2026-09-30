@@ -129,9 +129,9 @@ func TestWatcherSeesASubscriptionThroughItsLife(t *testing.T) {
 	if synced.Synced != u.Hash {
 		t.Errorf("event reports %s synced, want %s", synced.Synced, u.Hash)
 	}
-	if synced.Synced != synced.Head {
+	if synced.Synced != synced.Head.Hash {
 		t.Errorf("event reports %s synced at head %s; a caught-up subscriber should show both alike",
-			synced.Synced, synced.Head)
+			synced.Synced, synced.Head.Hash)
 	}
 
 	if err := cli.Close(); err != nil {
@@ -192,13 +192,13 @@ func TestEverySubscriberIsReportedSynced(t *testing.T) {
 	// subscriber: the ref moved once and everyone moved with it.
 	moved := 0
 	for _, e := range events {
-		if e.Kind == server.Synced && e.Synced == next {
+		if e.Kind == server.Synced && e.Synced == next.Hash {
 			moved++
 		}
 	}
 
 	if moved != followers {
-		t.Errorf("%d subscribers were reported synced at %s, want %d", moved, next, followers)
+		t.Errorf("%d subscribers were reported synced at %s, want %d", moved, next.Hash, followers)
 	}
 }
 

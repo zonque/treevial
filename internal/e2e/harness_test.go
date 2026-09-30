@@ -54,27 +54,27 @@ func newTestProvider() *testProvider {
 	return &testProvider{held: map[string]*refData{}}
 }
 
-func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) {
 	p.mu.Lock()
 	p.calls = append(p.calls, "prepare "+ref)
 	fail := p.failPrepare
 	p.mu.Unlock()
 
 	if fail {
-		return nil, plumbing.ZeroHash, errors.New("no data for this ref")
+		return nil, server.Head{}, errors.New("no data for this ref")
 	}
 
 	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
 
 	builder, err := structtree.NewBuilder(data.store, data.config)
 	if err != nil {
-		return nil, plumbing.ZeroHash, err
+		return nil, server.Head{}, err
 	}
 	data.builder = builder
 
 	root, err := builder.Build()
 	if err != nil {
-		return nil, plumbing.ZeroHash, err
+		return nil, server.Head{}, err
 	}
 
 	p.mu.Lock()
@@ -83,7 +83,7 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, plumbing.Hash, error
 	p.held[ref] = data
 	p.prepared = append(p.prepared, ref)
 
-	return data.store, root, nil
+	return data.store, server.Head{Hash: root}, nil
 }
 
 func (p *testProvider) Release(ref string) {
@@ -115,7 +115,7 @@ func (p *testProvider) lifecycle() []string {
 // retune changes one deeply nested field and rebuilds, declaring the field it
 // touched so only that leaf is encoded again — the path the example server
 // takes, exercised here end to end.
-func (p *testProvider) retune(t *testing.T, ref string, mtu int) plumbing.Hash {
+func (p *testProvider) retune(t *testing.T, ref string, mtu int) server.Head {
 	t.Helper()
 
 	p.mu.Lock()
@@ -133,7 +133,7 @@ func (p *testProvider) retune(t *testing.T, ref string, mtu int) plumbing.Hash {
 		t.Fatalf("Build: %v", err)
 	}
 
-	return root
+	return server.Head{Hash: root}
 }
 
 func (p *testProvider) counts(ref string) (prepared, released int) {

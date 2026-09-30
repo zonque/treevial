@@ -10,12 +10,13 @@ import (
 	"github.com/zonque/treevial"
 	"github.com/zonque/treevial/client"
 	"github.com/zonque/treevial/demo/shared"
+	"github.com/zonque/treevial/server"
 	"github.com/zonque/treevial/structtree"
 )
 
 // moveRef changes one field and pushes, returning the new head. Every state is
 // built while the ref is quiet, which is the rule a provider keeps.
-func moveRef(t *testing.T, h *harness, ref string, mtu int) plumbing.Hash {
+func moveRef(t *testing.T, h *harness, ref string, mtu int) server.Head {
 	t.Helper()
 
 	next := h.provider.retune(t, ref, mtu)
@@ -43,7 +44,7 @@ func TestAGraphKeepsEveryStateItWasEverPushed(t *testing.T) {
 		next := moveRef(t, h, refA, mtu)
 
 		u = followTo(t, updates, next)
-		waitForAllSynced(t, h.server, refA, next, 1)
+		waitForAllSynced(t, h.server, refA, next.Hash, 1)
 
 		if want := 17 + 4*(i+1); u.Graph.Len() != want {
 			t.Errorf("after %d moves the graph holds %d objects, want %d", i+1, u.Graph.Len(), want)
@@ -83,7 +84,7 @@ func TestAClientSweepsWhatItNoLongerNeeds(t *testing.T) {
 		next := moveRef(t, h, refA, mtu)
 
 		u = followTo(t, updates, next)
-		waitForAllSynced(t, h.server, refA, next, 1)
+		waitForAllSynced(t, h.server, refA, next.Hash, 1)
 
 		// The state it moved from is still there, so an update is
 		// still decoded by what changed rather than in full.
@@ -135,9 +136,9 @@ func TestAClientKeepsAsMuchHistoryAsItAsksFor(t *testing.T) {
 		next := moveRef(t, h, refA, mtu)
 
 		u = followTo(t, updates, next)
-		waitForAllSynced(t, h.server, refA, next, 1)
+		waitForAllSynced(t, h.server, refA, next.Hash, 1)
 
-		seen = append(seen, next)
+		seen = append(seen, next.Hash)
 	}
 
 	// Two states behind the current one, so the one before those is gone.

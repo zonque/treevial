@@ -53,8 +53,8 @@ func TestAShortBudgetDoesNotDisturbAHealthyConnection(t *testing.T) {
 	}
 
 	second := followTo(t, updates, next)
-	if second.Hash != next {
-		t.Errorf("second push reached %s, want %s", second.Hash, next)
+	if second.Hash != next.Hash {
+		t.Errorf("second push reached %s, want %s", second.Hash, next.Hash)
 	}
 
 	if err := cli.Err(); err != nil {

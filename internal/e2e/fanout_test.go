@@ -36,7 +36,7 @@ func waitForAllSynced(t *testing.T, srv *server.Server, ref string, h plumbing.H
 // followTo reads updates until the subscription reaches head, and returns the
 // update that got there. A subscriber may be handed intermediate states on the
 // way; what matters is where it ends up.
-func followTo(t *testing.T, updates <-chan client.Update, head plumbing.Hash) client.Update {
+func followTo(t *testing.T, updates <-chan client.Update, head server.Head) client.Update {
 	t.Helper()
 
 	deadline := time.After(10 * time.Second)
@@ -48,11 +48,11 @@ func followTo(t *testing.T, updates <-chan client.Update, head plumbing.Hash) cl
 				t.Fatal("update channel closed before the subscription reached the head")
 			}
 
-			if u.Hash == head {
+			if u.Hash == head.Hash {
 				return u
 			}
 		case <-deadline:
-			t.Fatalf("timed out before the subscription reached %s", head)
+			t.Fatalf("timed out before the subscription reached %s", head.Hash)
 		}
 	}
 }
@@ -132,7 +132,7 @@ func TestEverySubscriberMovesWhenTheRefMoves(t *testing.T) {
 		}
 	}
 
-	waitForAllSynced(t, h.server, refA, next, followers)
+	waitForAllSynced(t, h.server, refA, next.Hash, followers)
 }
 
 func TestASubscriberEndsUpAtTheNewestHead(t *testing.T) {
@@ -149,7 +149,7 @@ func TestASubscriberEndsUpAtTheNewestHead(t *testing.T) {
 	// Every state is built first: rebuilding a store while a push is
 	// reading it is the one thing a provider may not do, and the point
 	// here is the moves, not the building.
-	var heads []plumbing.Hash
+	var heads []server.Head
 	for _, mtu := range []int{4000, 6000, 9000} {
 		heads = append(heads, h.provider.retune(t, refA, mtu))
 	}
@@ -167,11 +167,11 @@ func TestASubscriberEndsUpAtTheNewestHead(t *testing.T) {
 
 	u := followTo(t, updates, last)
 
-	if u.Hash != last {
-		t.Fatalf("subscriber settled at %s, want the newest head %s", u.Hash, last)
+	if u.Hash != last.Hash {
+		t.Fatalf("subscriber settled at %s, want the newest head %s", u.Hash, last.Hash)
 	}
 
-	waitForAllSynced(t, h.server, refA, last, 1)
+	waitForAllSynced(t, h.server, refA, last.Hash, 1)
 }
 
 func TestALateSubscriberGetsTheCurrentHead(t *testing.T) {
@@ -191,7 +191,7 @@ func TestALateSubscriberGetsTheCurrentHead(t *testing.T) {
 	}
 
 	followTo(t, early, next)
-	waitForAllSynced(t, h.server, refA, next, 1)
+	waitForAllSynced(t, h.server, refA, next.Hash, 1)
 
 	// Somebody arriving now holds nothing and is at nobody's mercy about
 	// how far the ref has already travelled.
@@ -199,8 +199,8 @@ func TestALateSubscriberGetsTheCurrentHead(t *testing.T) {
 
 	u := nextUpdate(t, late)
 
-	if u.Hash != next {
-		t.Errorf("late subscriber was served %s, want the current head %s", u.Hash, next)
+	if u.Hash != next.Hash {
+		t.Errorf("late subscriber was served %s, want the current head %s", u.Hash, next.Hash)
 	}
 	if want := 17; u.ObjectCount != want {
 		t.Errorf("late subscriber was sent %d objects, want the whole graph's %d", u.ObjectCount, want)

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/zonque/treevial/internal/wire"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/receive"
+	"github.com/zonque/treevial/server"
 	"github.com/zonque/treevial/structtree"
 )
 
@@ -135,8 +137,8 @@ func TestServerPushesOnlyChangedObjectsOnTheOpenConnection(t *testing.T) {
 
 	second := nextUpdate(t, updates)
 
-	if second.Hash != v2 {
-		t.Errorf("second update hash %s, want %s", second.Hash, v2)
+	if second.Hash != v2.Hash {
+		t.Errorf("second update hash %s, want %s", second.Hash, v2.Hash)
 	}
 	// The rewritten blob plus the Primary, Network and root trees on its
 	// path; everything else is pruned.
@@ -177,8 +179,8 @@ func TestServerTracksWhenAClientHasSynced(t *testing.T) {
 	if clients[0].Synced != u.Hash {
 		t.Errorf("client synced at %s, want %s", clients[0].Synced, u.Hash)
 	}
-	if clients[0].Head != u.Hash {
-		t.Errorf("client head %s, want %s", clients[0].Head, u.Hash)
+	if clients[0].Head.Hash != u.Hash {
+		t.Errorf("client head %s, want %s", clients[0].Head.Hash, u.Hash)
 	}
 }
 
@@ -211,7 +213,7 @@ func TestDisconnectReleasesTheClientsResources(t *testing.T) {
 		return released == 1
 	})
 
-	if h.server.Head(refA) != plumbing.ZeroHash {
+	if h.server.Head(refA) != (server.Head{}) {
 		t.Error("the disconnected client's ref is still published")
 	}
 }
@@ -241,20 +243,21 @@ func TestARetiringRefIsNoLongerPublished(t *testing.T) {
 	})
 
 	// The release is still running, so this is the middle of the window.
-	if got := h.server.Head(refA); got != plumbing.ZeroHash {
-		t.Errorf("a ref being retired still reports head %s, want the zero hash", got)
+	if got := h.server.Head(refA); got != (server.Head{}) {
+		t.Errorf("a ref being retired still reports head %+v, want the zero Head", got)
 	}
-	if err := h.server.SetHead(refA, u.Hash); err == nil {
-		t.Error("SetHead moved a ref that nobody is subscribed to")
+	if err := h.server.SetHead(refA, server.Head{Hash: u.Hash}); !errors.Is(err, server.ErrNoSubscribers) {
+		t.Errorf("SetHead on a ref nobody is subscribed to = %v, want ErrNoSubscribers", err)
 	}
 }
 
 func TestSetHeadForAnUnknownClientFails(t *testing.T) {
 	h := newHarness(t)
 
-	err := h.server.SetHead("nobody", plumbing.NewHash("1111111111111111111111111111111111111111"))
-	if err == nil {
-		t.Error("SetHead accepted an unknown client")
+	head := server.Head{Hash: plumbing.NewHash("1111111111111111111111111111111111111111")}
+
+	if err := h.server.SetHead("nobody", head); !errors.Is(err, server.ErrNoSubscribers) {
+		t.Errorf("SetHead on an unknown ref = %v, want ErrNoSubscribers", err)
 	}
 }
 
