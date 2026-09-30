@@ -832,6 +832,105 @@ snapshot, which of them is the leader, and where the state comes from in the
 first place: none of it is treevial's business. It holds the objects, moves the
 heads, and pushes.
 
+### Running a cluster
+
+`demo/cluster` is all of the above, running: three processes replicating one
+dataset through [hashicorp/raft](https://github.com/hashicorp/raft), each
+serving its own clients. It is a module of its own, so raft is named in one
+`go.mod` and nothing that depends on this library ever hears of it.
+
+Every node is started with its own `-id` and the same `-peers`, and each
+bootstraps that configuration into its own empty log — so there is no order to
+start them in, and nothing to join:
+
+```console
+$ cd demo/cluster
+$ go run ./cmd/node -id a -raft 127.0.0.1:7001 -listen 127.0.0.1:9418 \
+      -peers a=127.0.0.1:7001,b=127.0.0.1:7002,c=127.0.0.1:7003
+$ go run ./cmd/node -id b -raft 127.0.0.1:7002 -listen 127.0.0.1:9419 -peers <the same>
+$ go run ./cmd/node -id c -raft 127.0.0.1:7003 -listen 127.0.0.1:9420 -peers <the same>
+```
+
+One of them wins the election, reads the database — a hardcoded map, standing
+in for the expensive query — and puts it in the log. Every node then builds its
+own objects from that entry. A ticker on the leader changes one field of one
+device every few seconds, which is what a message bus would deliver:
+
+```
+b 19:03:25 entry 3: loaded 3 device(s) from the database
+b 19:03:25 entry 4: refs/heads/printer-7/config MTU 4000 -> b1c0883954a8…
+b 19:03:27 entry 5: refs/heads/sensor-3/config MTU 4000 -> da36e460ce0d…
+```
+
+The devices are `printer-7`, `sensor-3` and `valve-9`. A client follows one of
+them, through whichever member it can reach:
+
+```console
+$ go run ./cmd/client -device printer-7 -servers 127.0.0.1:9418,127.0.0.1:9419,127.0.0.1:9420
+$ go run ./cmd/client -device sensor-3  -servers 127.0.0.1:9420,127.0.0.1:9419,127.0.0.1:9418
+```
+
+Run as many as you like, in any order of addresses. They are served by whatever
+node they land on, leader or not — subscribing is a read, and every member holds
+byte-identical objects for a given state.
+
+**Now kill the node a client is on.** It moves to the next address and resumes
+from the hash it holds:
+
+```
+printer-7 19:03:31 push 2: 30e5ce808282 seq 7 from a, 4 object(s), 429 B (1.4 KiB in total)
+printer-7 19:03:34 holding 30e5ce808282 at sequence 7; next address in 2s
+printer-7 19:03:36 connected to 127.0.0.1:9419, resuming from 30e5ce808282
+printer-7 19:03:36 push 3: 30e5ce808282 seq 7 from b, 0 object(s), 64 B (77 B in total)
+```
+
+**Zero objects, sixty-four bytes** — and nothing was coordinated to arrange it.
+The state the client was holding is one the new node already had, because both
+nodes built it from the same entry, so the delta between them is empty. That is
+the whole argument for content addressing in one line of output.
+
+Kill the leader too, and another wins in a couple of seconds and goes on
+injecting changes; a member elected with state already in hand does not read the
+database again:
+
+```
+b 19:03:35 elected leader at index 8; the state is already here
+```
+
+Kill a second node and the last one loses quorum: it goes on serving the state
+it has and stops moving, which is the correct answer rather than a failure.
+
+**To watch a snapshot travel**, restart a node once the leader has printed a
+`snapshot at entry N` line. The log and the snapshots are kept in memory, so a
+restarted node comes back holding nothing and has to be brought up by its
+peers — and if the leader has compacted past what it needs, that is a snapshot
+rather than a replay:
+
+```
+c 19:06:36 raft up with 3 peer(s)
+c 19:06:40 restored 3 ref(s) from a snapshot at entry 32, 29 object(s) loaded
+c 19:06:40 entry 33: refs/heads/printer-7/config MTU 1500 -> 35ae729ecbb6…
+```
+
+Those are the same hashes its peers hold, which is the equality test in the
+restore having passed — and entry 33 landing straight after it is the full walk
+having left the builder able to go on building incrementally.
+
+**And the ordinal.** A client that reconnects onto a member which has not caught
+up yet is pushed a state older than the one it holds. It says so and does not
+act on it:
+
+```
+printer-7 19:07:02 connected to 127.0.0.1:9420, resuming from 35ae729ecbb6
+printer-7 19:07:02 push 9: b1c0883954a8 at sequence 31 from c, behind the sequence 34 already held — not applied
+```
+
+That decision is the application's, not the library's: one client is one
+connection to one server, and only something that knows about all of them can
+say which head supersedes which. The client still acknowledges such an update
+and still resumes from it, because what the next member has to compute a delta
+against is what was actually sent.
+
 ## Saying which state is newer
 
 A head is a hash and, where something orders it, an ordinal:
@@ -1069,6 +1168,7 @@ even though the whole struct is current.
 | `structtree/` | Walks a Go struct with reflect onto a tree and back again, whole or incrementally in either direction |
 | `internal/wire/` | The protocol: pkt-line framed messages over a connection |
 | `demo/cmd/` | The runnable example: a server and a client |
+| `demo/cluster/` | The cluster demo: raft, three nodes, a client that fails over — a module of its own |
 | `demo/shared/` | The configuration struct both halves of the example share, used by the tests too |
 | `internal/e2e/` | Client and server together over a real TCP listener |
 | `examples/consumer/` | A separate module that names the public API without calling it, so an internal type reaching an exported signature breaks the build |
@@ -1093,7 +1193,13 @@ $ go test -race ./...
 $ go test -run '^$' -bench . ./structtree/ ./objects/   # the figures quoted above
 ```
 
+`demo/cluster` is a module of its own, so `./...` does not reach it:
+
+```console
+$ cd demo/cluster && go test -race ./...
+```
+
 `.github/workflows/test.yml` runs the same checks on every pull request and on
-every push to `main`: gofmt, vet, the suite under the race detector, the example
-module, and `go mod tidy` against both modules to catch a dependency added
-without tidying.
+every push to `main`: gofmt, vet, the suite under the race detector, both
+separate modules, and `go mod tidy` against all three to catch a dependency
+added without tidying.

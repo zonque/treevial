@@ -48,10 +48,23 @@ jobs:
           go vet ./...
           go build ./...
 
+      # Also its own module, which is how hashicorp/raft stays out of the
+      # library's dependencies. It has tests of its own, so it gets the whole
+      # treatment rather than a build.
+      - name: cluster demo module
+        working-directory: demo/cluster
+        run: |
+          go vet ./...
+          go test -race ./...
+          go build ./...
+
       # Catches a dependency added without tidying, which would otherwise
       # only show up for whoever next runs it.
       - name: tidy
         run: |
           go mod tidy
           (cd examples/consumer && go mod tidy)
-          git diff --exit-code -- go.mod go.sum examples/consumer/go.mod examples/consumer/go.sum
+          (cd demo/cluster && go mod tidy)
+          git diff --exit-code -- go.mod go.sum \
+            examples/consumer/go.mod examples/consumer/go.sum \
+            demo/cluster/go.mod demo/cluster/go.sum
