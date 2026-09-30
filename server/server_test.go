@@ -13,7 +13,10 @@ import (
 	"github.com/zonque/treevial/server"
 )
 
-var someHash = plumbing.NewHash("35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805")
+var (
+	someHash  = plumbing.NewHash("35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805")
+	otherHash = plumbing.NewHash("30e5ce8082820717b3fb5fec3e962c1d62103e14")
+)
 
 type stubProvider struct{}
 
@@ -24,7 +27,7 @@ func (stubProvider) Prepare(string) (*objects.Store, server.Head, error) {
 func (stubProvider) Release(string) {}
 
 func TestHeadIsUnknownForARefNobodyFollows(t *testing.T) {
-	srv, err := server.New(stubProvider{})
+	srv, err := server.New(server.WithProvider(stubProvider{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -34,18 +37,18 @@ func TestHeadIsUnknownForARefNobodyFollows(t *testing.T) {
 	}
 }
 
-// A node applies entries for every ref it replicates while only some of them
-// have subscribers here, so this is ordinary traffic and has to be testable
-// without matching on the text of an error.
-func TestSetHeadReportsThatNobodyIsSubscribed(t *testing.T) {
-	srv, err := server.New(stubProvider{})
+// A node applies entries for every ref it replicates while it may hold only
+// some of them, so this is ordinary traffic and has to be testable without
+// matching on the text of an error.
+func TestSetHeadReportsARefTheServerDoesNotHold(t *testing.T) {
+	srv, err := server.New(server.WithProvider(stubProvider{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
 	err = srv.SetHead("refs/heads/nobody/config", server.Head{Hash: someHash, Sequence: 1})
-	if !errors.Is(err, server.ErrNoSubscribers) {
-		t.Errorf("SetHead = %v, want ErrNoSubscribers", err)
+	if !errors.Is(err, server.ErrUnknownRef) {
+		t.Errorf("SetHead = %v, want ErrUnknownRef", err)
 	}
 }
 
@@ -56,7 +59,7 @@ func TestNewRefusesAnUnusableID(t *testing.T) {
 		strings.Repeat("n", treevial.MaxServerIDLength+1),
 	} {
 		t.Run(id, func(t *testing.T) {
-			srv, err := server.New(stubProvider{}, server.WithID(id))
+			srv, err := server.New(server.WithProvider(stubProvider{}), server.WithID(id))
 			if err == nil {
 				t.Fatalf("New accepted the ID %q", id)
 			}
@@ -71,7 +74,7 @@ func TestNewRefusesAnUnusableID(t *testing.T) {
 }
 
 func TestAServerReportsTheIDItWasGiven(t *testing.T) {
-	srv, err := server.New(stubProvider{}, server.WithID("node-3"))
+	srv, err := server.New(server.WithProvider(stubProvider{}), server.WithID("node-3"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -82,7 +85,7 @@ func TestAServerReportsTheIDItWasGiven(t *testing.T) {
 }
 
 func TestAServerNeedNotNameItself(t *testing.T) {
-	srv, err := server.New(stubProvider{})
+	srv, err := server.New(server.WithProvider(stubProvider{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -93,7 +96,7 @@ func TestAServerNeedNotNameItself(t *testing.T) {
 }
 
 func TestNewRefusesADeadPeerTimeoutTooSmallToEnforce(t *testing.T) {
-	srv, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(time.Millisecond))
+	srv, err := server.New(server.WithProvider(stubProvider{}), server.WithDeadPeerTimeout(time.Millisecond))
 	if err == nil {
 		t.Fatal("New accepted a one-millisecond dead-peer timeout")
 	}
@@ -106,7 +109,7 @@ func TestNewRefusesADeadPeerTimeoutTooSmallToEnforce(t *testing.T) {
 }
 
 func TestNewAcceptsAUsableDeadPeerTimeout(t *testing.T) {
-	if _, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(90*time.Second)); err != nil {
+	if _, err := server.New(server.WithProvider(stubProvider{}), server.WithDeadPeerTimeout(90*time.Second)); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 }
@@ -115,11 +118,11 @@ func TestNewAcceptsAUsableDeadPeerTimeout(t *testing.T) {
 // way a too-small one is — and it must mean the same on both sides, since a
 // caller driving these from configuration will have one zero default for both.
 func TestAServerNeedNoDeadPeerTimeout(t *testing.T) {
-	if _, err := server.New(stubProvider{}); err != nil {
+	if _, err := server.New(server.WithProvider(stubProvider{})); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if _, err := server.New(stubProvider{}, server.WithDeadPeerTimeout(0)); err != nil {
+	if _, err := server.New(server.WithProvider(stubProvider{}), server.WithDeadPeerTimeout(0)); err != nil {
 		t.Errorf("WithDeadPeerTimeout(0) = %v, want it read as unset, the way the client reads it", err)
 	}
 }

@@ -64,14 +64,24 @@ type Head struct {
 	Sequence uint64
 }
 
-// Errors reported by [Server.SetHead]. Both happen in the ordinary running of
-// a cluster, so both are named rather than left to be matched on text: a node
-// applies entries for every ref it replicates while only some of them have
-// subscribers here, and a head that has already been passed is what a
-// re-delivered entry carries.
+// The errors this package reports for a ref, each answering one question.
+// They are named rather than left to be matched on text because a cluster hits
+// them in its ordinary running: a node applies entries for every ref it
+// replicates while it may hold only some of them, and a head that has already
+// been passed is what a re-delivered entry carries.
 var (
-	ErrNoSubscribers = errors.New("treevial/server: nobody is subscribed to that ref")
-	ErrNotAdvancing  = errors.New("treevial/server: head does not advance")
+	// ErrUnknownRef is reported for a ref this server does not hold at all:
+	// one nobody has published and nobody is subscribed to.
+	ErrUnknownRef = errors.New("treevial/server: this server does not hold that ref")
+	// ErrRefHeld is reported by [Server.Publish] for a ref the server
+	// already holds, whether published or prepared for a subscriber.
+	ErrRefHeld = errors.New("treevial/server: this server already holds that ref")
+	// ErrNotPublished is reported by [Server.Unpublish] for a ref the
+	// server holds through a provider, whose lifetime is not the caller's
+	// to end.
+	ErrNotPublished = errors.New("treevial/server: that ref was not published")
+	// ErrNotAdvancing is reported for a head that does not move its ref.
+	ErrNotAdvancing = errors.New("treevial/server: head does not advance")
 )
 
 // Provider supplies and disposes of the objects behind one ref. The server owns
@@ -209,6 +219,11 @@ type refState struct {
 	retiring bool
 	retired  chan struct{}
 	members  map[*subscriber]struct{}
+	// published says the application holds this ref, so no provider is
+	// asked for it, no release is made of it, and it outlives every
+	// subscription to it. Set before the entry is reachable and never
+	// written again.
+	published bool
 
 	mu   sync.Mutex
 	head Head
@@ -376,12 +391,17 @@ type Server struct {
 // satisfied reports why, and [New] returns that error rather than a server.
 type Option func(*Server) error
 
-// New returns a server that asks provider for each ref's objects.
-func New(provider Provider, opts ...Option) (*Server, error) {
+// New returns a server that serves the refs it is given.
+//
+// With no [WithProvider] it serves only what [Server.Publish] has handed it:
+// refs the application holds itself, whose lifetime is the application's and
+// which need no subscriber in order to exist. With a provider, a ref that has
+// not been published is prepared when its first client subscribes and released
+// after its last one leaves.
+func New(opts ...Option) (*Server, error) {
 	s := &Server{
-		provider: provider,
-		refs:     map[string]*refState{},
-		conns:    map[*wire.Conn]struct{}{},
+		refs:  map[string]*refState{},
+		conns: map[*wire.Conn]struct{}{},
 	}
 
 	for _, opt := range opts {
@@ -391,6 +411,24 @@ func New(provider Provider, opts ...Option) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// WithProvider gives the server somewhere to ask for the objects behind a ref
+// that has not been published, when its first client subscribes.
+//
+// A ref is published or provider-backed, never both. Without this option a
+// server serves published refs alone and turns away a subscription to anything
+// else.
+func WithProvider(p Provider) Option {
+	return func(s *Server) error {
+		if p == nil {
+			return treevial.Errorf(treevial.CodeInvalid, "a nil provider")
+		}
+
+		s.provider = p
+
+		return nil
+	}
 }
 
 // WithID gives the server a name of its own, which it tells every client that
@@ -573,6 +611,102 @@ func (s *Server) Stop() {
 	}
 }
 
+// Publish hands the server a ref the application holds itself, with the objects
+// behind it and the head it points at.
+//
+// The ref then exists because this node holds it. It needs no subscriber, it
+// outlives every subscription to it, and [Server.SetHead] moves it whether or
+// not anybody is connected — which is what lets a node apply entries for refs
+// no client has asked for yet. A client that subscribes joins what is already
+// there and is pushed the current head. Neither [Provider.Prepare] nor
+// [Provider.Release] is ever called for it.
+//
+// Publishing does not replace. A ref the server already holds is refused, so
+// there is no moment at which a subscriber's acknowledged tree stops existing
+// underneath it. Taking on new state — a snapshot's restore included — is
+// loading the objects into the store the ref already has and moving its head
+// with SetHead; nothing removes objects from a store, so the old ones stay and
+// every connected subscriber goes on being served incrementally. Reclaiming
+// them is Unpublish and then Publish with a new store, which costs that ref's
+// subscribers a reconnect.
+//
+// The head goes in by the same rule as SetHead's: publishing decides whether
+// the ref is sequenced, and from then on it moves only forward.
+func (s *Server) Publish(ref string, store *objects.Store, head Head) error {
+	if err := treevial.ValidateRef(ref); err != nil {
+		return treevial.Errorf(treevial.CodeInvalid, "publish: %v", err)
+	}
+
+	if store == nil {
+		return treevial.Errorf(treevial.CodeInvalid, "publish %q: a nil store", ref)
+	}
+
+	st := newRefState()
+	st.published = true
+	st.store = store
+	st.prepared = true
+
+	s.mu.Lock()
+	if _, held := s.refs[ref]; held {
+		s.mu.Unlock()
+
+		return fmt.Errorf("publish %q: %w", ref, ErrRefHeld)
+	}
+	s.refs[ref] = st
+	s.mu.Unlock()
+
+	// Installed before the head is checked so that nothing else can take
+	// the ref in between, and taken back out rather than left behind if the
+	// head is refused.
+	if _, err := st.moveHead(head); err != nil {
+		s.forget(ref, st)
+
+		return fmt.Errorf("publish %q: %w", ref, err)
+	}
+
+	close(st.ready)
+
+	return nil
+}
+
+// Unpublish gives up a ref the application published, and ends the
+// subscriptions to it.
+//
+// The node is saying it no longer holds the objects those subscribers are being
+// served from, so leaving them following the ref would leave them following
+// something that can never be pushed to them again.
+func (s *Server) Unpublish(ref string) error {
+	s.mu.Lock()
+	st, held := s.refs[ref]
+
+	switch {
+	case !held:
+		s.mu.Unlock()
+
+		return fmt.Errorf("unpublish %q: %w", ref, ErrUnknownRef)
+	case !st.published:
+		s.mu.Unlock()
+
+		return fmt.Errorf("unpublish %q: %w", ref, ErrNotPublished)
+	}
+
+	delete(s.refs, ref)
+
+	conns := make([]*wire.Conn, 0, len(st.members))
+	for c := range st.members {
+		conns = append(conns, c.conn)
+	}
+	s.mu.Unlock()
+
+	// Closing the connection is what ends a subscription, whichever side
+	// does it: the goroutine serving it notices on its next read or write.
+	for _, conn := range conns {
+		conn.Close()
+	}
+
+	return nil
+}
+
 // SetHead points ref at hash and immediately wakes everyone following it. This
 // is the trigger for a push: nothing is requested by the client.
 //
@@ -593,7 +727,7 @@ func (s *Server) SetHead(ref string, head Head) error {
 	s.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("set head of %q: %w", ref, ErrNoSubscribers)
+		return fmt.Errorf("set head of %q: %w", ref, ErrUnknownRef)
 	}
 
 	moved, err := st.moveHead(head)
@@ -836,6 +970,15 @@ func (s *Server) connect(
 		}
 
 		if !following {
+			if s.provider == nil {
+				// Nothing published this ref and there is nowhere
+				// to ask for it.
+				s.mu.Unlock()
+
+				return nil, treevial.Errorf(treevial.CodeInvalid,
+					"this server does not serve %q", ref)
+			}
+
 			st = newRefState()
 			s.refs[ref] = st
 			first = true
@@ -849,6 +992,8 @@ func (s *Server) connect(
 		break
 	}
 
+	// A published ref was ready before anybody arrived. A provider-backed
+	// one is prepared by whoever got there first.
 	if first {
 		s.prepare(c.state, ref)
 	}
@@ -914,8 +1059,9 @@ func (s *Server) disconnect(c *subscriber) {
 	s.mu.Lock()
 	delete(st.members, c)
 	// Only this ref's last subscriber retires it, and only while the entry
-	// is still the one it joined.
-	last := len(st.members) == 0 && s.refs[c.ref] == st
+	// is still the one it joined. A published ref is not retired by anybody
+	// leaving: the application holds it, not its subscribers.
+	last := !st.published && len(st.members) == 0 && s.refs[c.ref] == st
 	if last {
 		// The entry stays in place, marked, until the provider has been
 		// given its data back, so the ref cannot be prepared again while

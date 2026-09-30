@@ -23,17 +23,20 @@ import (
 
 // Listening, and pushing when a ref moves.
 var (
-	_ func(server.Provider, ...server.Option) (*server.Server, error) = server.New
-	_ func(string) server.Option                                      = server.WithID
-	_ func(time.Duration) server.Option                               = server.WithDeadPeerTimeout
-	_ func(*server.Server) string                                     = (*server.Server).ID
+	_ func(...server.Option) (*server.Server, error) = server.New
+	_ func(server.Provider) server.Option            = server.WithProvider
+	_ func(string) server.Option                     = server.WithID
+	_ func(time.Duration) server.Option              = server.WithDeadPeerTimeout
+	_ func(*server.Server) string                    = (*server.Server).ID
 
-	_ func(*server.Server, net.Listener) error        = (*server.Server).Serve
-	_ func(*server.Server)                            = (*server.Server).Stop
-	_ func(*server.Server, string, server.Head) error = (*server.Server).SetHead
-	_ func(*server.Server, string) server.Head        = (*server.Server).Head
-	_ func(*server.Server) []server.Subscription      = (*server.Server).Subscribers
-	_ func(*server.Server, server.Watcher)            = (*server.Server).Watch
+	_ func(*server.Server, net.Listener) error                        = (*server.Server).Serve
+	_ func(*server.Server)                                            = (*server.Server).Stop
+	_ func(*server.Server, string, server.Head) error                 = (*server.Server).SetHead
+	_ func(*server.Server, string, *objects.Store, server.Head) error = (*server.Server).Publish
+	_ func(*server.Server, string) error                              = (*server.Server).Unpublish
+	_ func(*server.Server, string) server.Head                        = (*server.Server).Head
+	_ func(*server.Server) []server.Subscription                      = (*server.Server).Subscribers
+	_ func(*server.Server, server.Watcher)                            = (*server.Server).Watch
 )
 
 // Where a ref points, and the two ways a head that may not move it is
@@ -44,7 +47,9 @@ var (
 	_ plumbing.Hash = head.Hash
 	_ uint64        = head.Sequence
 
-	_ error = server.ErrNoSubscribers
+	_ error = server.ErrUnknownRef
+	_ error = server.ErrRefHeld
+	_ error = server.ErrNotPublished
 	_ error = server.ErrNotAdvancing
 )
 

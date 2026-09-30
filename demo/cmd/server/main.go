@@ -41,12 +41,12 @@ func main() {
 func run(addr, id string, mutate time.Duration) error {
 	provider := newDemoProvider()
 
-	var opts []server.Option
+	opts := []server.Option{server.WithProvider(provider)}
 	if id != "" {
 		opts = append(opts, server.WithID(id))
 	}
 
-	srv, err := server.New(provider, opts...)
+	srv, err := server.New(opts...)
 	if err != nil {
 		return fmt.Errorf("new server: %w", err)
 	}

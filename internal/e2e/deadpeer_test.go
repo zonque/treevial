@@ -16,7 +16,7 @@ import (
 func TestAShortBudgetDoesNotDisturbAHealthyConnection(t *testing.T) {
 	provider := newTestProvider()
 
-	srv, err := server.New(provider, server.WithDeadPeerTimeout(tcpkeep.MinTimeout))
+	srv, err := server.New(server.WithProvider(provider), server.WithDeadPeerTimeout(tcpkeep.MinTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

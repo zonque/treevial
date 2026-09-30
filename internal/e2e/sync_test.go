@@ -246,8 +246,8 @@ func TestARetiringRefIsNoLongerPublished(t *testing.T) {
 	if got := h.server.Head(refA); got != (server.Head{}) {
 		t.Errorf("a ref being retired still reports head %+v, want the zero Head", got)
 	}
-	if err := h.server.SetHead(refA, server.Head{Hash: u.Hash}); !errors.Is(err, server.ErrNoSubscribers) {
-		t.Errorf("SetHead on a ref nobody is subscribed to = %v, want ErrNoSubscribers", err)
+	if err := h.server.SetHead(refA, server.Head{Hash: u.Hash}); !errors.Is(err, server.ErrUnknownRef) {
+		t.Errorf("SetHead on a ref nobody is subscribed to = %v, want ErrUnknownRef", err)
 	}
 }
 
@@ -256,8 +256,8 @@ func TestSetHeadForAnUnknownClientFails(t *testing.T) {
 
 	head := server.Head{Hash: plumbing.NewHash("1111111111111111111111111111111111111111")}
 
-	if err := h.server.SetHead("nobody", head); !errors.Is(err, server.ErrNoSubscribers) {
-		t.Errorf("SetHead on an unknown ref = %v, want ErrNoSubscribers", err)
+	if err := h.server.SetHead("nobody", head); !errors.Is(err, server.ErrUnknownRef) {
+		t.Errorf("SetHead on an unknown ref = %v, want ErrUnknownRef", err)
 	}
 }
 

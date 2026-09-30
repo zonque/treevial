@@ -190,7 +190,7 @@ func newHarness(t *testing.T) *harness {
 
 	provider := newTestProvider()
 
-	srv, err := server.New(provider)
+	srv, err := server.New(server.WithProvider(provider))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
