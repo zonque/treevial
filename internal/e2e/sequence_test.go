@@ -231,3 +231,49 @@ func TestAPreparedHeadOfTheWrongKindFailsThePreparation(t *testing.T) {
 		t.Errorf("code = %s, want %s", got, treevial.CodeInternal)
 	}
 }
+
+// What the client does with the ordinal is nothing: it reports it, on every
+// update, and an application running several clients is what compares them.
+func TestAnUpdateCarriesTheHeadsSequence(t *testing.T) {
+	h := newHarness(t)
+	h.provider.sequenced = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, refA)
+
+	if got := nextUpdate(t, updates); got.Sequence != 1 {
+		t.Errorf("first update carried sequence %d, want 1", got.Sequence)
+	}
+
+	next := h.provider.retune(t, refA, 9000)
+	next.Sequence = 2
+
+	if err := h.server.SetHead(refA, next); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	second := followTo(t, updates, next)
+	if second.Sequence != 2 {
+		t.Errorf("second update carried sequence %d, want 2", second.Sequence)
+	}
+	if second.Hash != next.Hash {
+		t.Errorf("second update carried %s, want %s", second.Hash, next.Hash)
+	}
+}
+
+// A server with nothing to order against sends no trailer, and its client
+// reports none.
+func TestAnUnsequencedServerReportsNoSequence(t *testing.T) {
+	h := newHarness(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, updates := h.subscribe(t, ctx, refA)
+
+	if got := nextUpdate(t, updates); got.Sequence != 0 {
+		t.Errorf("an unsequenced server reported sequence %d, want 0", got.Sequence)
+	}
+}

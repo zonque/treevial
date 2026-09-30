@@ -578,3 +578,41 @@ func TestAnUnusableOriginIsRefusedRatherThanWritten(t *testing.T) {
 		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeInternal)
 	}
 }
+
+// Both trailers on one line: the sequence the ref was moved to, and the origin
+// the objects were fetched from. One says which state this is, the other where
+// it came from, and neither crowds the other out.
+func TestAForwardedPushCarriesBothTrailers(t *testing.T) {
+	h := newHarness(t)
+	h.provider.sequenced = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	remote := newElsewhere(t, refA)
+	hook := &forwarder{remote: remote, origin: "node-5"}
+	h.server.Forward(hook)
+
+	_, updates := h.subscribe(t, ctx, refA)
+	nextUpdate(t, updates)
+
+	// The ref moves to a node that owns it, and this server fetches the
+	// objects from there while consensus tells it where the ref now points.
+	hook.set(func(f *forwarder) { f.on = true })
+
+	moved := remote.move(t, 9000)
+	moved.Sequence = 2
+
+	if err := h.server.SetHead(refA, moved); err != nil {
+		t.Fatalf("SetHead: %v", err)
+	}
+
+	u := followTo(t, updates, moved)
+
+	if u.Sequence != 2 {
+		t.Errorf("Sequence = %d, want 2", u.Sequence)
+	}
+	if u.OriginID != "node-5" {
+		t.Errorf("OriginID = %q, want node-5", u.OriginID)
+	}
+}
