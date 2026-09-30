@@ -7,7 +7,6 @@
 package serverside
 
 import (
-	"context"
 	"io"
 	"net"
 	"time"
@@ -35,7 +34,6 @@ var (
 	_ func(*server.Server, string) server.Head        = (*server.Server).Head
 	_ func(*server.Server) []server.Subscription      = (*server.Server).Subscribers
 	_ func(*server.Server, server.Watcher)            = (*server.Server).Watch
-	_ func(*server.Server, server.Forwarder)          = (*server.Server).Forward
 )
 
 // Where a ref points, and the two ways a head that may not move it is
@@ -52,11 +50,8 @@ var (
 
 // The interfaces an application implements, and the values they are handed.
 var (
-	_ server.Provider  = provider{}
-	_ server.Watcher   = server.WatcherFunc(func(server.Event) {})
-	_ server.Forwarder = server.ForwarderFunc(func(context.Context, server.Push) (*server.Pack, error) {
-		return nil, nil
-	})
+	_ server.Provider = provider{}
+	_ server.Watcher  = server.WatcherFunc(func(server.Event) {})
 )
 
 // provider is the smallest thing that satisfies server.Provider, present so
@@ -79,11 +74,9 @@ func (provider) Prepare(ref string) (*objects.Store, server.Head, error) {
 
 func (provider) Release(string) {}
 
-// A subscription, a push and a pack, field by field.
+// A subscription and an event, field by field.
 var (
 	subscription server.Subscription
-	push         server.Push
-	pack         server.Pack
 	event        server.Event
 )
 
@@ -96,16 +89,6 @@ var (
 	_ int64         = subscription.Sent
 	_ int64         = subscription.Received
 
-	_ string        = push.Ref
-	_ string        = push.ClientID
-	_ string        = push.Addr
-	_ plumbing.Hash = push.Have
-	_ plumbing.Hash = push.Want
-
-	_ int       = pack.Objects
-	_ string    = pack.OriginID
-	_ io.Reader = pack.Body
-
 	_ server.EventKind    = event.Kind
 	_ server.Subscription = event.Subscription
 )
@@ -115,7 +98,10 @@ var (
 	_ func() *objects.Store                                                       = objects.NewStore
 	_ func(*objects.Store, []byte) (plumbing.Hash, error)                         = (*objects.Store).AddBlob
 	_ func(*objects.Store, []object.TreeEntry) (plumbing.Hash, error)             = (*objects.Store).AddTree
-	_ func(*objects.Store, plumbing.Hash) (*object.Tree, error)                   = (*objects.Store).Tree
+	_ func(*objects.Store, plumbing.Hash) ([]object.TreeEntry, bool)              = (*objects.Store).Tree
+	_ func(*objects.Store, plumbing.Hash) ([]byte, bool)                          = (*objects.Store).Blob
+	_ func(*objects.Store, plumbing.Hash) (*object.Tree, error)                   = (*objects.Store).TreeObject
+	_ func(*objects.Store, io.Reader) (int, error)                                = (*objects.Store).LoadPack
 	_ func(*objects.Store, plumbing.Hash, plumbing.Hash) ([]plumbing.Hash, error) = (*objects.Store).SelectSince
 	_ func(*objects.Store, io.Writer, []plumbing.Hash) (plumbing.Hash, error)     = (*objects.Store).EncodePack
 	_ func(*objects.Store, plumbing.Hash, string, []byte) (plumbing.Hash, error)  = (*objects.Store).ReplaceBlob

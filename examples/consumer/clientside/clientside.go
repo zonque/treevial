@@ -58,7 +58,6 @@ var update client.Update
 var (
 	_ string         = update.Ref
 	_ string         = update.ServerID
-	_ string         = update.OriginID
 	_ uint64         = update.Sequence
 	_ plumbing.Hash  = update.Hash
 	_ plumbing.Hash  = update.Previous

@@ -169,7 +169,7 @@ func TestAckCarriesTheHash(t *testing.T) {
 func TestUpdateCarriesTheHashAndObjectCount(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return server.WriteUpdate(someHash, 16, 0, "") })
+	writing(t, func() error { return server.WriteUpdate(someHash, 16, 0) })
 
 	msg, err := client.ReadServerMessage()
 	if err != nil {
@@ -195,7 +195,7 @@ func TestPackDataSurvivesTheRoundTrip(t *testing.T) {
 	}
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 3, 0, ""); err != nil {
+		if err := server.WriteUpdate(someHash, 3, 0); err != nil {
 			return err
 		}
 
@@ -225,7 +225,7 @@ func TestAnUpdateWithNoPackEndsImmediately(t *testing.T) {
 	client, server := pair(t)
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 0, 0, ""); err != nil {
+		if err := server.WriteUpdate(someHash, 0, 0); err != nil {
 			return err
 		}
 
@@ -253,7 +253,7 @@ func TestTheConnectionCarriesOneUpdateAfterAnother(t *testing.T) {
 
 	writing(t, func() error {
 		for _, h := range []plumbing.Hash{someHash, second} {
-			if err := server.WriteUpdate(h, 1, 0, ""); err != nil {
+			if err := server.WriteUpdate(h, 1, 0); err != nil {
 				return err
 			}
 
@@ -379,21 +379,18 @@ func TestServerLineRoundTrips(t *testing.T) {
 	}
 }
 
-func TestAnUpdateCarriesItsOptionalTrailers(t *testing.T) {
+func TestAnUpdateCarriesItsOptionalSequence(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		seq    uint64
-		origin string
+		name string
+		seq  uint64
 	}{
-		{"neither", 0, ""},
-		{"sequenced", 98, ""},
-		{"forwarded", 0, "node-5"},
-		{"both", 98, "node-5"},
+		{"unsequenced", 0},
+		{"sequenced", 98},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, server := pair(t)
 
-			writing(t, func() error { return server.WriteUpdate(someHash, 17, tc.seq, tc.origin) })
+			writing(t, func() error { return server.WriteUpdate(someHash, 17, tc.seq) })
 
 			msg, err := client.ReadServerMessage()
 			if err != nil {
@@ -412,50 +409,14 @@ func TestAnUpdateCarriesItsOptionalTrailers(t *testing.T) {
 			if msg.Sequence != tc.seq {
 				t.Errorf("Sequence = %d, want %d", msg.Sequence, tc.seq)
 			}
-			if msg.OriginID != tc.origin {
-				t.Errorf("OriginID = %q, want %q", msg.OriginID, tc.origin)
-			}
 		})
-	}
-}
-
-// The trailers are named, so the order they appear in carries no meaning.
-func TestUpdateTrailersAreOrderIndependent(t *testing.T) {
-	client, server := pair(t)
-
-	writing(t, func() error {
-		return server.WriteLine("update " + someHash.String() + " 4 origin=node-5 seq=98")
-	})
-
-	msg, err := client.ReadServerMessage()
-	if err != nil {
-		t.Fatalf("ReadServerMessage: %v", err)
-	}
-	if msg.Sequence != 98 || msg.OriginID != "node-5" {
-		t.Errorf("got seq %d origin %q, want 98 and node-5", msg.Sequence, msg.OriginID)
-	}
-}
-
-// A server ID may contain an equals sign, so only the first one on a trailer
-// separates the key from the value.
-func TestATrailerValueMayContainAnEqualsSign(t *testing.T) {
-	client, server := pair(t)
-
-	writing(t, func() error { return server.WriteUpdate(someHash, 4, 0, "a=b") })
-
-	msg, err := client.ReadServerMessage()
-	if err != nil {
-		t.Fatalf("ReadServerMessage: %v", err)
-	}
-	if msg.OriginID != "a=b" {
-		t.Errorf("OriginID = %q, want %q", msg.OriginID, "a=b")
 	}
 }
 
 func TestTheLargestSequenceSurvivesTheRoundTrip(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return server.WriteUpdate(someHash, 4, math.MaxUint64, "") })
+	writing(t, func() error { return server.WriteUpdate(someHash, 4, math.MaxUint64) })
 
 	msg, err := client.ReadServerMessage()
 	if err != nil {
@@ -469,12 +430,10 @@ func TestTheLargestSequenceSurvivesTheRoundTrip(t *testing.T) {
 func TestMalformedUpdateTrailersAreRefused(t *testing.T) {
 	for _, line := range []string{
 		"update " + someHash.String() + " 4 seq=98 seq=99",            // a repeat
-		"update " + someHash.String() + " 4 origin=a origin=b",        // a repeat
 		"update " + someHash.String() + " 4 what=98",                  // an unknown key
 		"update " + someHash.String() + " 4 node-5",                   // a value without a key
 		"update " + someHash.String() + " 4 seq",                      // no value at all
 		"update " + someHash.String() + " 4 seq=",                     // an empty value
-		"update " + someHash.String() + " 4 origin=",                  // an empty value
 		"update " + someHash.String() + " 4 seq=0",                    // absent is how unsequenced is said
 		"update " + someHash.String() + " 4 seq=+98",                  // not canonical decimal
 		"update " + someHash.String() + " 4 seq=-1",                   // not a uint64

@@ -15,10 +15,6 @@
 // — a place in [Server.Subscribers], and a ref that can never be released.
 // [WithDeadPeerTimeout] bounds how long it may.
 //
-// A server need not own what it serves: a [Forwarder] fetches a push's objects
-// from wherever the ref actually lives, which lets a cluster move a ref
-// between its nodes without the clients following it noticing anything.
-//
 // A ref's head is a hash and, where something orders it, an ordinal: see
 // [Head] for what that is for, and what a ref gains by having one — chiefly
 // that it then moves only forward.
@@ -29,10 +25,8 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -136,84 +130,6 @@ type Subscription struct {
 	// registration and one acknowledgement per push.
 	Sent     int64
 	Received int64
-}
-
-// Forwarder serves a push from somewhere other than this server's own
-// objects.
-//
-// It exists for the case where the ref a client is following is owned by
-// another server — a cluster that elects a leader, say. The client knows
-// nothing of it: its connection stays where it is, and the objects are
-// fetched behind it and written on as ordinary updates. Whatever decides who
-// owns what, and however the servers talk among themselves, is the
-// application's business; this is only where the answer is asked for.
-//
-// Forward is consulted for every push, not once per connection, so a cluster
-// may reorganise under a live subscription and the next push follows the new
-// arrangement. It is called from the goroutine serving that subscriber, so a
-// slow fetch delays that one client and nobody else.
-//
-// Moving the ref is a separate matter and stays with the application: a
-// server that does not own a ref still learns from its own consensus layer
-// that the ref has moved, and says so with [Server.SetHead]. A forwarder
-// alone pushes nothing, because nothing has told the server there is anything
-// to push.
-type Forwarder interface {
-	// Forward returns the objects the subscriber needs to get from Have to
-	// Want. A nil Pack means this server serves the push from its own
-	// store, exactly as it would with no forwarder at all.
-	//
-	// The context is the client connection's: it is cancelled when that
-	// client goes away, so a fetch is not left outstanding for a
-	// subscriber that no longer exists.
-	Forward(ctx context.Context, req Push) (*Pack, error)
-}
-
-// ForwarderFunc lets a plain function be a [Forwarder].
-type ForwarderFunc func(ctx context.Context, req Push) (*Pack, error)
-
-// Forward implements Forwarder.
-func (f ForwarderFunc) Forward(ctx context.Context, req Push) (*Pack, error) {
-	return f(ctx, req)
-}
-
-// Push is one subscriber's need for objects, as put to a [Forwarder].
-type Push struct {
-	// Ref the subscriber is following, verbatim.
-	Ref string
-	// ClientID is what the client called itself, and Addr where it
-	// connected from. Neither decides anything; they are here so a
-	// forwarder can log and account for what it fetches.
-	ClientID string
-	Addr     string
-	// Have is the tree this subscriber has acknowledged, or the zero hash
-	// if it holds nothing. Want is the head it should reach. The objects
-	// asked for are those between them, for this subscriber alone.
-	Have plumbing.Hash
-	Want plumbing.Hash
-}
-
-// Pack is what a [Forwarder] answers with: a count, and the packfile carrying
-// that many objects.
-type Pack struct {
-	// Objects is how many objects Body carries. It is announced to the
-	// client before the pack is, so it must be the pack's own count.
-	Objects int
-	// Body is a packfile. It may be nil when Objects is zero, which is how
-	// a forwarder says the subscriber is already current. If Body is an
-	// io.Closer it is closed once the pack has been written on.
-	Body io.Reader
-	// OriginID names the server these objects were fetched from, so that a
-	// client can log where a push it was sent actually came from. Leaving
-	// it empty says nothing rather than saying "here".
-	//
-	// Nothing is decided by its value, but it does go on the update line
-	// as one field, so it has to survive that: one that would not — a
-	// space, a control character, over 128 bytes — ends the subscription
-	// with an internal error rather than being written into a line the
-	// client could not parse. [github.com/zonque/treevial.ValidateServerID]
-	// is the rule.
-	OriginID string
 }
 
 // EventKind says what happened to a subscription.
@@ -448,13 +364,12 @@ type Server struct {
 	// once before Serve, so it needs no lock either.
 	deadPeer time.Duration
 
-	mu        sync.Mutex
-	refs      map[string]*refState
-	conns     map[*wire.Conn]struct{}
-	lis       net.Listener
-	stopped   bool
-	watcher   Watcher
-	forwarder Forwarder
+	mu      sync.Mutex
+	refs    map[string]*refState
+	conns   map[*wire.Conn]struct{}
+	lis     net.Listener
+	stopped bool
+	watcher Watcher
 }
 
 // Option configures a Server as it is created. An option that cannot be
@@ -561,26 +476,6 @@ func (s *Server) Watch(w Watcher) {
 	defer s.mu.Unlock()
 
 	s.watcher = w
-}
-
-// Forward registers f to be asked, for every push, whether this server serves
-// it from its own objects or fetches them from elsewhere. It replaces any
-// previous forwarder, and a nil one goes back to serving everything locally.
-//
-// Set it before Serve.
-func (s *Server) Forward(f Forwarder) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.forwarder = f
-}
-
-// forward returns the forwarder in force, or nil.
-func (s *Server) forward() Forwarder {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.forwarder
 }
 
 // report tells the watcher, if there is one, how a subscriber stands now. It
@@ -798,11 +693,6 @@ func (s *Server) isStopped() bool {
 func (s *Server) handle(nc net.Conn) {
 	conn := wire.NewConn(nc)
 
-	// Everything done on this client's behalf is done under a context of
-	// its own, so nothing outlives the connection it was for.
-	ctx, done := context.WithCancel(context.Background())
-	defer done()
-
 	s.mu.Lock()
 	s.conns[conn] = struct{}{}
 	s.mu.Unlock()
@@ -815,7 +705,7 @@ func (s *Server) handle(nc net.Conn) {
 		conn.Close()
 	}()
 
-	err := s.serve(ctx, conn, nc.RemoteAddr().String())
+	err := s.serve(conn, nc.RemoteAddr().String())
 
 	// A refusal is told to the client; anything else is the connection
 	// itself going away, and there is nobody left to tell.
@@ -827,7 +717,7 @@ func (s *Server) handle(nc net.Conn) {
 
 // serve registers the client, pushes what it is missing, and then stays put,
 // pushing again every time its ref moves.
-func (s *Server) serve(ctx context.Context, conn *wire.Conn, addr string) error {
+func (s *Server) serve(conn *wire.Conn, addr string) error {
 	msg, err := register(conn)
 	if err != nil {
 		return err
@@ -852,23 +742,15 @@ func (s *Server) serve(ctx context.Context, conn *wire.Conn, addr string) error 
 	acks := make(chan plumbing.Hash, 1)
 	recvErr := make(chan error, 1)
 
-	// The read side is what notices a client going away, and it is the
-	// only thing that does while a push is in hand: cancelling here is
-	// what stops a fetch being made on behalf of somebody who has hung up.
-	ctx, hungUp := context.WithCancel(ctx)
-	defer hungUp()
-
-	go func() {
-		err := readAcks(conn, acks)
-		hungUp()
-		recvErr <- err
-	}()
+	// The read side is what notices a client going away, and while a push
+	// is in hand it is the only thing that does.
+	go func() { recvErr <- readAcks(conn, acks) }()
 
 	// Push what the client is missing right away, then on every ref change.
 	pending := c.state.currentHead()
 
 	for {
-		if err := s.push(ctx, conn, c, pending); err != nil {
+		if err := s.push(conn, c, pending); err != nil {
 			return err
 		}
 
@@ -1085,29 +967,16 @@ func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recv
 	}
 }
 
-// push sends the client the objects between the tree it holds and hash. What
-// that is depends on the subscriber, not on the ref: two clients following one
-// ref from different starting points are sent different objects.
-//
-// Where the objects come from is asked afresh every time, so a server that has
-// just stopped owning a ref — or just started — serves the next push
-// accordingly, on the connection it already has.
-func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, head Head) error {
-	pack, err := s.fetch(ctx, c, head.Hash)
-	if err != nil {
-		return err
-	}
-
-	if pack != nil {
-		return sendPack(conn, head, pack)
-	}
-
+// push sends the client the objects between the tree it holds and the head.
+// What that is depends on the subscriber, not on the ref: two clients
+// following one ref from different starting points are sent different objects.
+func (s *Server) push(conn *wire.Conn, c *subscriber, head Head) error {
 	missing, err := c.state.store.SelectSince(c.held(), head.Hash)
 	if err != nil {
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
 
-	if err := conn.WriteUpdate(head.Hash, len(missing), head.Sequence, ""); err != nil {
+	if err := conn.WriteUpdate(head.Hash, len(missing), head.Sequence); err != nil {
 		return err
 	}
 
@@ -1118,76 +987,6 @@ func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, head 
 	if len(missing) > 0 {
 		if _, err := c.state.store.EncodePack(w, missing); err != nil {
 			return treevial.Errorf(treevial.CodeInternal, "encode pack: %v", err)
-		}
-	}
-
-	return w.Close()
-}
-
-// fetch asks the forwarder, if there is one, for this subscriber's objects. A
-// nil pack and a nil error mean this server serves the push itself.
-func (s *Server) fetch(ctx context.Context, c *subscriber, hash plumbing.Hash) (*Pack, error) {
-	f := s.forward()
-	if f == nil {
-		return nil, nil
-	}
-
-	pack, err := f.Forward(ctx, Push{
-		Ref:      c.ref,
-		ClientID: c.clientID,
-		Addr:     c.addr,
-		Have:     c.held(),
-		Want:     hash,
-	})
-	if err != nil {
-		// A forwarder that reports a treevial error has said how it
-		// wants the client told; anything else is this server failing
-		// to do its job.
-		var reported *treevial.Error
-		if errors.As(err, &reported) {
-			return nil, reported
-		}
-
-		return nil, treevial.Errorf(treevial.CodeInternal,
-			"fetch objects for %q: %v", c.ref, err)
-	}
-
-	return pack, nil
-}
-
-// sendPack writes a pack that came from somewhere else, framed by this server
-// as though it had encoded it: the client cannot tell the difference, and the
-// protocol does not know there is one.
-func sendPack(conn *wire.Conn, head Head, pack *Pack) error {
-	if closer, ok := pack.Body.(io.Closer); ok {
-		defer closer.Close()
-	}
-
-	// An update that announces objects and then carries none would leave
-	// the client waiting on a pack that never comes, so it is refused here
-	// rather than written.
-	if pack.Objects > 0 && pack.Body == nil {
-		return treevial.Errorf(treevial.CodeInternal,
-			"forwarded pack announces %d objects but carries none", pack.Objects)
-	}
-
-	// It goes on the update line as one field, so a name that could not
-	// survive that is refused rather than written into a line the client
-	// would fail to parse.
-	if err := treevial.ValidateServerID(pack.OriginID); err != nil {
-		return treevial.Errorf(treevial.CodeInternal, "forwarded pack: %v", err)
-	}
-
-	if err := conn.WriteUpdate(head.Hash, pack.Objects, head.Sequence, pack.OriginID); err != nil {
-		return err
-	}
-
-	w := conn.PackWriter()
-
-	if pack.Body != nil {
-		if _, err := io.Copy(w, pack.Body); err != nil {
-			return treevial.Errorf(treevial.CodeInternal,
-				"forwarded pack: %v", err)
 		}
 	}
 

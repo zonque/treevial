@@ -14,9 +14,8 @@
 // given up on.
 //
 // A client is told the name of the server it reached, if that server has one,
-// the name of wherever a forwarded push's objects came from, and the ordinal of
-// the state it was pushed. All three arrive on every [Update]; nothing here is
-// decided by any of them.
+// and the ordinal of the state it was pushed. Both arrive on every [Update];
+// nothing here is decided by either.
 //
 // One client is one connection to one server. An application that dials
 // several of them for redundancy is what compares their ordinals and decides
@@ -66,10 +65,6 @@ type Update struct {
 	// checked, nothing is decided by it, and a server that sends one
 	// serves exactly what a server that does not would.
 	ServerID string
-	// OriginID names the server this push's objects were fetched from, and
-	// is empty when the server named none — which covers both a push served
-	// from its own store and a forwarder that said nothing.
-	OriginID string
 	// Sequence is the ordinal of the head this update carries, or zero if
 	// the server sent none.
 	//
@@ -430,7 +425,6 @@ func (c *Client) consume(
 		case updates <- Update{
 			Ref:         ref,
 			ServerID:    serverID,
-			OriginID:    msg.OriginID,
 			Sequence:    msg.Sequence,
 			Hash:        msg.Hash,
 			Previous:    previous,

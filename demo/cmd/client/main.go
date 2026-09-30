@@ -174,21 +174,15 @@ func render(u client.Update, config *shared.Config) (string, error) {
 	return b.String(), nil
 }
 
-// from names where a push came from, the way a person reading a log wants it:
-// the server that sent it, and — when that server fetched the objects from
-// somewhere else — where they actually came from. A server that did not name
-// itself has only its address to be known by.
+// from names the server a push came from, the way a person reading a log wants
+// it. A server that did not name itself has only its address to be known by.
 func from(u client.Update, addr string) string {
 	sender := u.ServerID
 	if sender == "" {
 		sender = addr
 	}
 
-	if u.OriginID == "" {
-		return sender
-	}
-
-	return fmt.Sprintf("%s via %s", u.OriginID, sender)
+	return sender
 }
 
 // size renders a byte count the way a human reads it. The figures it is given

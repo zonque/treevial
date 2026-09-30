@@ -96,9 +96,6 @@ type ServerMessage struct {
 	ObjectCount int
 	// ServerID is set on an Announce: the name the server gave itself.
 	ServerID string
-	// OriginID is set on an Update whose objects were fetched from another
-	// server, and is empty when the sending server named none.
-	OriginID string
 	// Sequence is the ordinal of the head an Update carries, or zero if the
 	// server sent none.
 	Sequence uint64
@@ -222,16 +219,12 @@ func (c *Conn) WriteServerID(id string) error {
 // WriteUpdate announces a new state. The pack follows, written through
 // PackWriter, whose Close ends the update.
 //
-// origin names the server the objects were fetched from, and is left off the
-// line entirely when empty — which is how "served from this server's own
-// store" is said.
-func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int, seq uint64, origin string) error {
+// seq is the ordinal of the head, left off the line entirely when zero —
+// which is how "this server has nothing to order against" is said.
+func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int, seq uint64) error {
 	line := fmt.Sprintf("update %s %d", hash, objects)
 	if seq != 0 {
 		line += fmt.Sprintf(" seq=%d", seq)
-	}
-	if origin != "" {
-		line += " origin=" + origin
 	}
 
 	return c.WriteLine(line)
@@ -398,8 +391,6 @@ func parseTrailers(msg *ServerMessage, fields []string, line string) error {
 	}
 
 	for _, field := range fields {
-		// A value may itself contain '=' — a server ID is allowed to —
-		// so only the first one separates the key from the value.
 		key, value, ok := strings.Cut(field, "=")
 		if !ok || value == "" {
 			return malformed()
@@ -419,12 +410,6 @@ func parseTrailers(msg *ServerMessage, fields []string, line string) error {
 			}
 
 			msg.Sequence = seq
-		case "origin":
-			if msg.OriginID != "" {
-				return malformed()
-			}
-
-			msg.OriginID = value
 		default:
 			return malformed()
 		}
