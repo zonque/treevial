@@ -263,6 +263,86 @@ func (s *Store) Blob(h plumbing.Hash) ([]byte, bool) {
 	return content, true
 }
 
+// Has reports whether the store holds the object at h.
+//
+// A store is only ever added to or compacted, and both leave every object a
+// tree reaches in place, so holding a tree means holding everything beneath
+// it: this answers for a whole graph as well as for one object.
+func (s *Store) Has(h plumbing.Hash) bool {
+	if h.IsZero() {
+		return false
+	}
+
+	return s.storer().HasEncodedObject(h) == nil
+}
+
+// Compact returns a new store holding what the given roots reach, and how many
+// objects it left behind. The zero hash among the roots is ignored, so a ref
+// that points nowhere can be passed in with the rest.
+//
+// Nothing is deleted. The store it reads is untouched, which is what lets a
+// compaction run while pushes are encoding from it: each holds the store it
+// read through its own pointer and finishes undisturbed, and once the last of
+// them is done nothing references it and everything the new store did not take
+// is freed.
+//
+// Moving an object is a map insert. The stored object is shared with the new
+// store rather than copied and its hash is already known, so what a compaction
+// costs is in the number of objects retained, not in their size.
+//
+// A root the store cannot walk in full is refused and no store comes back,
+// since a compaction that could not see all of what it was keeping would take
+// the graph apart.
+func (s *Store) Compact(roots ...plumbing.Hash) (*Store, int, error) {
+	out := NewStore()
+
+	live := map[plumbing.Hash]bool{}
+
+	for _, root := range roots {
+		if root.IsZero() {
+			continue
+		}
+
+		err := s.walk(root, func(h plumbing.Hash) (bool, error) {
+			// Already taken, along with everything beneath it.
+			if live[h] {
+				return false, nil
+			}
+			live[h] = true
+
+			obj, err := s.storer().EncodedObject(plumbing.AnyObject, h)
+			if err != nil {
+				return false, err
+			}
+
+			if _, err := out.storer().SetEncodedObject(obj); err != nil {
+				return false, err
+			}
+
+			return true, nil
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("compact from %s: %w", root, err)
+		}
+	}
+
+	// The memo goes with what it describes, so the walks after a compaction
+	// are as quick as the ones before it.
+	s.mu.RLock()
+	for h, entries := range s.decoded {
+		if live[h] {
+			out.decoded[h] = entries
+		}
+	}
+	s.mu.RUnlock()
+
+	s.objects.RLock()
+	held := len(s.storage.Objects)
+	s.objects.RUnlock()
+
+	return out, held - len(live), nil
+}
+
 // LoadPack adds every object a packfile carries to the store, and returns how
 // many it added.
 //
