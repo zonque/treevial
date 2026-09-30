@@ -995,7 +995,7 @@ func (s *Server) push(ctx context.Context, conn *wire.Conn, c *subscriber, hash 
 		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
 	}
 
-	if err := conn.WriteUpdate(hash, len(missing), ""); err != nil {
+	if err := conn.WriteUpdate(hash, len(missing), 0, ""); err != nil {
 		return err
 	}
 
@@ -1066,7 +1066,7 @@ func sendPack(conn *wire.Conn, hash plumbing.Hash, pack *Pack) error {
 		return treevial.Errorf(treevial.CodeInternal, "forwarded pack: %v", err)
 	}
 
-	if err := conn.WriteUpdate(hash, pack.Objects, pack.OriginID); err != nil {
+	if err := conn.WriteUpdate(hash, pack.Objects, 0, pack.OriginID); err != nil {
 		return err
 	}
 

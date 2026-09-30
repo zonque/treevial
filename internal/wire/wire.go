@@ -99,6 +99,9 @@ type ServerMessage struct {
 	// OriginID is set on an Update whose objects were fetched from another
 	// server, and is empty when the sending server named none.
 	OriginID string
+	// Sequence is the ordinal of the head an Update carries, or zero if the
+	// server sent none.
+	Sequence uint64
 }
 
 // Conn is one end of a treevial connection.
@@ -222,10 +225,13 @@ func (c *Conn) WriteServerID(id string) error {
 // origin names the server the objects were fetched from, and is left off the
 // line entirely when empty — which is how "served from this server's own
 // store" is said.
-func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int, origin string) error {
+func (c *Conn) WriteUpdate(hash plumbing.Hash, objects int, seq uint64, origin string) error {
 	line := fmt.Sprintf("update %s %d", hash, objects)
+	if seq != 0 {
+		line += fmt.Sprintf(" seq=%d", seq)
+	}
 	if origin != "" {
-		line += " " + origin
+		line += " origin=" + origin
 	}
 
 	return c.WriteLine(line)
@@ -327,10 +333,9 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 		return ServerMessage{Type: Announce, ServerID: fields[1]}, nil
 
 	case "update":
-		// The origin is the one optional field, and the last, so an
-		// update from a server that has none reads exactly as it always
-		// did.
-		if len(fields) != 3 && len(fields) != 4 {
+		// Whatever follows the count is a trailer, so an update from a
+		// server that has none reads exactly as it always did.
+		if len(fields) < 3 {
 			return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
 		}
 
@@ -346,13 +351,8 @@ func (c *Conn) ReadServerMessage() (ServerMessage, error) {
 
 		msg := ServerMessage{Type: Update, Hash: hash, ObjectCount: objects}
 
-		if len(fields) == 4 {
-			// Absent is how "no origin" is said; an empty field is
-			// a malformed line rather than another way of saying it.
-			if fields[3] == "" {
-				return ServerMessage{}, treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
-			}
-			msg.OriginID = fields[3]
+		if err := parseTrailers(&msg, fields[3:], line); err != nil {
+			return ServerMessage{}, err
 		}
 
 		return msg, nil
@@ -384,6 +384,53 @@ func parseHash(s string) (plumbing.Hash, error) {
 	}
 
 	return hash, nil
+}
+
+// parseTrailers reads an update's optional named fields.
+//
+// They may come in either order and each may appear once. An unknown key, a
+// repeat, a missing or empty value, or a sequence of zero is a malformed line
+// rather than something to overlook: a client that acted on half a line it did
+// not understand would be worse than one that refused it.
+func parseTrailers(msg *ServerMessage, fields []string, line string) error {
+	malformed := func() error {
+		return treevial.Errorf(treevial.CodeInvalid, "wire: malformed update line %q", line)
+	}
+
+	for _, field := range fields {
+		// A value may itself contain '=' — a server ID is allowed to —
+		// so only the first one separates the key from the value.
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || value == "" {
+			return malformed()
+		}
+
+		switch key {
+		case "seq":
+			if msg.Sequence != 0 {
+				return malformed()
+			}
+
+			// Absent is how an unsequenced head is said, so zero is
+			// not another way of saying it.
+			seq, err := strconv.ParseUint(value, 10, 64)
+			if err != nil || seq == 0 {
+				return malformed()
+			}
+
+			msg.Sequence = seq
+		case "origin":
+			if msg.OriginID != "" {
+				return malformed()
+			}
+
+			msg.OriginID = value
+		default:
+			return malformed()
+		}
+	}
+
+	return nil
 }
 
 // PackWriter frames pack bytes into pkt-lines as they are produced, so the pack

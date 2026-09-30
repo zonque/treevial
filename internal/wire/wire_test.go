@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"testing"
 
@@ -168,7 +169,7 @@ func TestAckCarriesTheHash(t *testing.T) {
 func TestUpdateCarriesTheHashAndObjectCount(t *testing.T) {
 	client, server := pair(t)
 
-	writing(t, func() error { return server.WriteUpdate(someHash, 16, "") })
+	writing(t, func() error { return server.WriteUpdate(someHash, 16, 0, "") })
 
 	msg, err := client.ReadServerMessage()
 	if err != nil {
@@ -194,7 +195,7 @@ func TestPackDataSurvivesTheRoundTrip(t *testing.T) {
 	}
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 3, ""); err != nil {
+		if err := server.WriteUpdate(someHash, 3, 0, ""); err != nil {
 			return err
 		}
 
@@ -224,7 +225,7 @@ func TestAnUpdateWithNoPackEndsImmediately(t *testing.T) {
 	client, server := pair(t)
 
 	writing(t, func() error {
-		if err := server.WriteUpdate(someHash, 0, ""); err != nil {
+		if err := server.WriteUpdate(someHash, 0, 0, ""); err != nil {
 			return err
 		}
 
@@ -252,7 +253,7 @@ func TestTheConnectionCarriesOneUpdateAfterAnother(t *testing.T) {
 
 	writing(t, func() error {
 		for _, h := range []plumbing.Hash{someHash, second} {
-			if err := server.WriteUpdate(h, 1, ""); err != nil {
+			if err := server.WriteUpdate(h, 1, 0, ""); err != nil {
 				return err
 			}
 
@@ -378,18 +379,21 @@ func TestServerLineRoundTrips(t *testing.T) {
 	}
 }
 
-func TestAnUpdateCarriesAnOptionalOrigin(t *testing.T) {
+func TestAnUpdateCarriesItsOptionalTrailers(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
+		seq    uint64
 		origin string
 	}{
-		{"served locally", ""},
-		{"forwarded", "node-5"},
+		{"neither", 0, ""},
+		{"sequenced", 98, ""},
+		{"forwarded", 0, "node-5"},
+		{"both", 98, "node-5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, server := pair(t)
 
-			writing(t, func() error { return server.WriteUpdate(someHash, 17, tc.origin) })
+			writing(t, func() error { return server.WriteUpdate(someHash, 17, tc.seq, tc.origin) })
 
 			msg, err := client.ReadServerMessage()
 			if err != nil {
@@ -405,6 +409,9 @@ func TestAnUpdateCarriesAnOptionalOrigin(t *testing.T) {
 			if msg.ObjectCount != 17 {
 				t.Errorf("ObjectCount = %d, want 17", msg.ObjectCount)
 			}
+			if msg.Sequence != tc.seq {
+				t.Errorf("Sequence = %d, want %d", msg.Sequence, tc.seq)
+			}
 			if msg.OriginID != tc.origin {
 				t.Errorf("OriginID = %q, want %q", msg.OriginID, tc.origin)
 			}
@@ -412,32 +419,106 @@ func TestAnUpdateCarriesAnOptionalOrigin(t *testing.T) {
 	}
 }
 
-// A three-field update is what every server before this change sent, and it
-// has to keep parsing exactly as it did.
-func TestAThreeFieldUpdateStillParses(t *testing.T) {
+// The trailers are named, so the order they appear in carries no meaning.
+func TestUpdateTrailersAreOrderIndependent(t *testing.T) {
 	client, server := pair(t)
 
 	writing(t, func() error {
-		return server.WriteLine("update " + someHash.String() + " 17")
+		return server.WriteLine("update " + someHash.String() + " 4 origin=node-5 seq=98")
 	})
 
 	msg, err := client.ReadServerMessage()
 	if err != nil {
 		t.Fatalf("ReadServerMessage: %v", err)
 	}
-	if msg.ObjectCount != 17 || msg.OriginID != "" {
-		t.Errorf("got %+v, want 17 objects and no origin", msg)
+	if msg.Sequence != 98 || msg.OriginID != "node-5" {
+		t.Errorf("got seq %d origin %q, want 98 and node-5", msg.Sequence, msg.OriginID)
+	}
+}
+
+// A server ID may contain an equals sign, so only the first one on a trailer
+// separates the key from the value.
+func TestATrailerValueMayContainAnEqualsSign(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error { return server.WriteUpdate(someHash, 4, 0, "a=b") })
+
+	msg, err := client.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+	if msg.OriginID != "a=b" {
+		t.Errorf("OriginID = %q, want %q", msg.OriginID, "a=b")
+	}
+}
+
+func TestTheLargestSequenceSurvivesTheRoundTrip(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error { return server.WriteUpdate(someHash, 4, math.MaxUint64, "") })
+
+	msg, err := client.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+	if msg.Sequence != math.MaxUint64 {
+		t.Errorf("Sequence = %d, want %d", msg.Sequence, uint64(math.MaxUint64))
+	}
+}
+
+func TestMalformedUpdateTrailersAreRefused(t *testing.T) {
+	for _, line := range []string{
+		"update " + someHash.String() + " 4 seq=98 seq=99",            // a repeat
+		"update " + someHash.String() + " 4 origin=a origin=b",        // a repeat
+		"update " + someHash.String() + " 4 what=98",                  // an unknown key
+		"update " + someHash.String() + " 4 node-5",                   // the old positional form
+		"update " + someHash.String() + " 4 seq",                      // no value at all
+		"update " + someHash.String() + " 4 seq=",                     // an empty value
+		"update " + someHash.String() + " 4 origin=",                  // an empty value
+		"update " + someHash.String() + " 4 seq=0",                    // absent is how unsequenced is said
+		"update " + someHash.String() + " 4 seq=+98",                  // not canonical decimal
+		"update " + someHash.String() + " 4 seq=-1",                   // not a uint64
+		"update " + someHash.String() + " 4 seq=0x5",                  // not decimal
+		"update " + someHash.String() + " 4 seq=9_8",                  // not decimal
+		"update " + someHash.String() + " 4 seq=18446744073709551616", // past the uint64 ceiling
+	} {
+		t.Run(line, func(t *testing.T) {
+			client, server := pair(t)
+
+			writing(t, func() error { return server.WriteLine(line) })
+
+			if _, err := client.ReadServerMessage(); err == nil {
+				t.Errorf("ReadServerMessage accepted %q", line)
+			}
+		})
+	}
+}
+
+// A leading zero is accepted, exactly as the object count's own Atoi accepts
+// one. Pinned so the leniency is a decision rather than an accident.
+func TestASequenceWithALeadingZeroIsAccepted(t *testing.T) {
+	client, server := pair(t)
+
+	writing(t, func() error {
+		return server.WriteLine("update " + someHash.String() + " 4 seq=098")
+	})
+
+	msg, err := client.ReadServerMessage()
+	if err != nil {
+		t.Fatalf("ReadServerMessage: %v", err)
+	}
+	if msg.Sequence != 98 {
+		t.Errorf("Sequence = %d, want 98", msg.Sequence)
 	}
 }
 
 func TestMalformedServerAndUpdateLinesAreRefused(t *testing.T) {
 	for _, line := range []string{
-		"server",                                 // no id
-		"server ",                                // an empty id is not a name
-		"server node-3 extra",                    // one field only
-		"update " + someHash.String(),            // no count
-		"update " + someHash.String() + " 4 ",    // empty trailing field
-		"update " + someHash.String() + " 4 a b", // too many fields
+		"server",                              // no id
+		"server ",                             // an empty id is not a name
+		"server node-3 extra",                 // one field only
+		"update " + someHash.String(),         // no count
+		"update " + someHash.String() + " 4 ", // empty trailing field
 	} {
 		t.Run(line, func(t *testing.T) {
 			client, server := pair(t)
