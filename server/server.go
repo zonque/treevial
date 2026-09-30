@@ -211,10 +211,9 @@ func (f WatcherFunc) Observe(e Event) { f(e) }
 // connection — the first subscriber brings it into being and the last one to
 // leave takes it away again.
 type refState struct {
-	// ready is closed once the provider has answered. store, prepared and
-	// err are written before that and only read after it.
+	// ready is closed once the provider has answered. prepared and err are
+	// written before that and only read after it.
 	ready    chan struct{}
-	store    *objects.Store
 	prepared bool
 	err      error
 
@@ -233,8 +232,9 @@ type refState struct {
 	// written again.
 	published bool
 
-	mu   sync.Mutex
-	head Head
+	mu    sync.Mutex
+	head  Head
+	store *objects.Store
 	// sequenced says whether this ref is ordered, and installed whether
 	// anybody has given it a head at all. The kind is fixed by whichever of
 	// the provider and the application installs one first: a SetHead may
@@ -257,6 +257,33 @@ func (st *refState) currentHead() Head {
 	defer st.mu.Unlock()
 
 	return st.head
+}
+
+// current returns the objects behind the ref and the head they are at, which
+// have to be read together: separately, a caller could pair a new head with
+// the store it replaced, or the reverse, and either is a head that store
+// cannot serve.
+func (st *refState) current() (*objects.Store, Head) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	return st.store, st.head
+}
+
+// currentStore returns the objects behind the ref.
+func (st *refState) currentStore() *objects.Store {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	return st.store
+}
+
+// setStore installs the objects behind the ref.
+func (st *refState) setStore(store *objects.Store) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.store = store
 }
 
 // moveHead points the ref at head if head is allowed to move it, and says
@@ -351,12 +378,33 @@ func (c *subscriber) held() plumbing.Hash {
 	return c.synced
 }
 
-// ack records that the client interpreted everything up to hash.
-func (c *subscriber) ack(hash plumbing.Hash) {
+// ack records that the client interpreted everything up to hash, which was
+// pushed from store.
+//
+// A sweep replaces a ref's store and resets the baselines whose trees it
+// dropped. An acknowledgement of a push made before that would put one back,
+// and the next push would then compute a delta from a tree the new store does
+// not hold — so an acknowledgement naming a store the ref has since replaced
+// is stale, exactly as one naming an earlier head is, and is dropped the same
+// way.
+func (c *subscriber) ack(store *objects.Store, hash plumbing.Hash) {
+	if store != c.state.currentStore() {
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.synced = hash
+}
+
+// reset forgets what the subscriber was holding, so that its next push carries
+// the whole of its ref's tree.
+func (c *subscriber) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.synced = plumbing.ZeroHash
 }
 
 // wake tells the subscriber its ref has moved.
@@ -651,8 +699,8 @@ func (s *Server) Publish(ref string, store *objects.Store, head Head) error {
 
 	st := newRefState()
 	st.published = true
-	st.store = store
 	st.prepared = true
+	st.setStore(store)
 
 	s.mu.Lock()
 	if _, held := s.refs[ref]; held {
@@ -757,18 +805,21 @@ func (s *Server) SetHead(ref string, head Head) error {
 	return nil
 }
 
-// Head returns where ref points, or the zero [Head] if nobody is subscribed to
-// it.
-func (s *Server) Head(ref string) Head {
+// Head returns where ref points and whether this server holds it at all.
+//
+// A ref this server holds may point nowhere: a zero Hash is a ref whose state
+// is gone, whose subscribers have been told so and are still following it. That
+// is why the two answers are separate.
+func (s *Server) Head(ref string) (Head, bool) {
 	s.mu.Lock()
 	st, ok := s.living(ref)
 	s.mu.Unlock()
 
 	if !ok {
-		return Head{}
+		return Head{}, false
 	}
 
-	return st.currentHead()
+	return st.currentHead(), true
 }
 
 // living returns the state for ref if the ref is one that somebody is
@@ -889,14 +940,17 @@ func (s *Server) serve(conn *wire.Conn, addr string) error {
 	go func() { recvErr <- readAcks(conn, acks) }()
 
 	// Push what the client is missing right away, then on every ref change.
-	pending := c.state.currentHead()
-
+	// The store and the head are read together each time round, so however
+	// many times the ref moved — or was swept — while this client was being
+	// brought up to date, what it owes it now is the pair as it stands.
 	for {
-		if err := s.push(conn, c, pending); err != nil {
+		store, head := c.state.current()
+
+		if err := s.push(conn, c, store, head); err != nil {
 			return err
 		}
 
-		if err := awaitAck(c, pending.Hash, acks, recvErr); err != nil {
+		if err := awaitAck(c, store, head.Hash, acks, recvErr); err != nil {
 			return err
 		}
 
@@ -904,10 +958,6 @@ func (s *Server) serve(conn *wire.Conn, addr string) error {
 
 		select {
 		case <-c.notify:
-			// However many times the ref moved while this client was
-			// being brought up to date, what it owes it now is the
-			// head as it stands.
-			pending = c.state.currentHead()
 		case err := <-recvErr:
 			return err
 		}
@@ -1015,6 +1065,15 @@ func (s *Server) connect(
 		return nil, err
 	}
 
+	// A baseline this ref's store does not hold is a state the server has
+	// dropped — a sweep reclaims exactly those — so the client is sent the
+	// whole tree rather than refused a delta that cannot be computed. A
+	// resend is a superset and never silently short, which is the direction
+	// that matters.
+	if !c.held().IsZero() && !c.state.currentStore().Has(c.held()) {
+		c.reset()
+	}
+
 	c.announced = true
 	s.report(Subscribed, c)
 
@@ -1041,7 +1100,7 @@ func (s *Server) prepare(st *refState, ref string) {
 		// A head that does not advance is not a failure: the application
 		// has moved this ref past what the provider built, and the ref is
 		// where it should be.
-		st.store = store
+		st.setStore(store)
 		st.prepared = true
 	}
 
@@ -1104,7 +1163,13 @@ func (s *Server) disconnect(c *subscriber) {
 
 // awaitAck blocks until the client confirms it has interpreted the update, so
 // the server's idea of the client's state never runs ahead of reality.
-func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recvErr <-chan error) error {
+func awaitAck(
+	c *subscriber,
+	store *objects.Store,
+	hash plumbing.Hash,
+	acks <-chan plumbing.Hash,
+	recvErr <-chan error,
+) error {
 	for {
 		select {
 		case acked := <-acks:
@@ -1112,7 +1177,7 @@ func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recv
 				// A stale acknowledgement for an earlier push.
 				continue
 			}
-			c.ack(hash)
+			c.ack(store, hash)
 
 			return nil
 		case err := <-recvErr:
@@ -1124,10 +1189,19 @@ func awaitAck(c *subscriber, hash plumbing.Hash, acks <-chan plumbing.Hash, recv
 // push sends the client the objects between the tree it holds and the head.
 // What that is depends on the subscriber, not on the ref: two clients
 // following one ref from different starting points are sent different objects.
-func (s *Server) push(conn *wire.Conn, c *subscriber, head Head) error {
-	missing, err := c.state.store.SelectSince(c.held(), head.Hash)
-	if err != nil {
-		return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
+func (s *Server) push(conn *wire.Conn, c *subscriber, store *objects.Store, head Head) error {
+	var missing []plumbing.Hash
+
+	// A void head names no tree, so there is nothing to walk and nothing to
+	// send: the update itself is what says the state the client held is
+	// gone.
+	if !head.Hash.IsZero() {
+		var err error
+
+		missing, err = store.SelectSince(c.held(), head.Hash)
+		if err != nil {
+			return treevial.Errorf(treevial.CodeInvalid, "objects since %s: %v", c.held(), err)
+		}
 	}
 
 	if err := conn.WriteUpdate(head.Hash, len(missing), head.Sequence); err != nil {
@@ -1139,7 +1213,7 @@ func (s *Server) push(conn *wire.Conn, c *subscriber, head Head) error {
 	w := conn.PackWriter()
 
 	if len(missing) > 0 {
-		if _, err := c.state.store.EncodePack(w, missing); err != nil {
+		if _, err := store.EncodePack(w, missing); err != nil {
 			return treevial.Errorf(treevial.CodeInternal, "encode pack: %v", err)
 		}
 	}

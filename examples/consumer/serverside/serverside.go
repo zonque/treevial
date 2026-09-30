@@ -34,7 +34,7 @@ var (
 	_ func(*server.Server, string, server.Head) error                 = (*server.Server).SetHead
 	_ func(*server.Server, string, *objects.Store, server.Head) error = (*server.Server).Publish
 	_ func(*server.Server, string) error                              = (*server.Server).Unpublish
-	_ func(*server.Server, string) server.Head                        = (*server.Server).Head
+	_ func(*server.Server, string) (server.Head, bool)                = (*server.Server).Head
 	_ func(*server.Server) []server.Subscription                      = (*server.Server).Subscribers
 	_ func(*server.Server, server.Watcher)                            = (*server.Server).Watch
 )

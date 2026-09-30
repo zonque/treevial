@@ -138,7 +138,7 @@ func TestAPublishedRefOutlivesItsSubscribers(t *testing.T) {
 	// Still held, and still movable with nobody connected at all.
 	head := n.apply(refA, 9000)
 
-	if got := n.srv.Head(refA); got != head {
+	if got, _ := n.srv.Head(refA); got != head {
 		t.Errorf("Head() = %+v after the last subscriber left, want %+v", got, head)
 	}
 
@@ -202,8 +202,9 @@ func TestUnpublishEndsTheSubscriptions(t *testing.T) {
 		t.Error("the subscription outlived the ref it was following")
 	}
 
-	if got := n.srv.Head(refA); got != (server.Head{}) {
-		t.Errorf("Head() = %+v after Unpublish, want the zero Head", got)
+	// Unpublished is not the same as void: the ref is gone, not empty.
+	if got, held := n.srv.Head(refA); held {
+		t.Errorf("Head() = %+v, true after Unpublish, want it unheld", got)
 	}
 	if err := n.srv.SetHead(refA, server.Head{Hash: first.Hash, Sequence: 99}); !errors.Is(err, server.ErrUnknownRef) {
 		t.Errorf("SetHead after Unpublish = %v, want ErrUnknownRef", err)

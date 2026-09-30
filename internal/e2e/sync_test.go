@@ -213,7 +213,7 @@ func TestDisconnectReleasesTheClientsResources(t *testing.T) {
 		return released == 1
 	})
 
-	if h.server.Head(refA) != (server.Head{}) {
+	if _, held := h.server.Head(refA); held {
 		t.Error("the disconnected client's ref is still published")
 	}
 }
@@ -243,8 +243,8 @@ func TestARetiringRefIsNoLongerPublished(t *testing.T) {
 	})
 
 	// The release is still running, so this is the middle of the window.
-	if got := h.server.Head(refA); got != (server.Head{}) {
-		t.Errorf("a ref being retired still reports head %+v, want the zero Head", got)
+	if got, held := h.server.Head(refA); held {
+		t.Errorf("a ref being retired still reports head %+v, want it unheld", got)
 	}
 	if err := h.server.SetHead(refA, server.Head{Hash: u.Hash}); !errors.Is(err, server.ErrUnknownRef) {
 		t.Errorf("SetHead on a ref nobody is subscribed to = %v, want ErrUnknownRef", err)
@@ -352,7 +352,10 @@ func TestAConnectionThatDoesNotRegisterFirstIsRejected(t *testing.T) {
 	}
 }
 
-func TestSubscribingWithAnUnknownSyncedHashFails(t *testing.T) {
+// A synced hash the ref's store does not hold is a state the server has
+// dropped — a sweep reclaims exactly those — so the client is resynchronised
+// rather than refused. A resend is a superset and never silently short.
+func TestSubscribingWithAnUnknownSyncedHashIsServedInFull(t *testing.T) {
 	h := newHarness(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -367,12 +370,13 @@ func TestSubscribingWithAnUnknownSyncedHashFails(t *testing.T) {
 	unknown := plumbing.NewHash("1111111111111111111111111111111111111111")
 
 	updates, err := c.Resume(ctx, refA, unknown, receive.NewGraph())
-	if err == nil {
-		err = drainForError(t, c, updates)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
 	}
 
-	if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
-		t.Errorf("got error %v (code %s), want %s", err, got, treevial.CodeInvalid)
+	u := nextUpdate(t, updates)
+	if want := 17; u.ObjectCount != want {
+		t.Errorf("served %d objects, want the whole tree's %d", u.ObjectCount, want)
 	}
 }
 

@@ -87,7 +87,7 @@ func TestASequencedRefOnlyMovesForward(t *testing.T) {
 			if err := h.server.SetHead(refA, stale); !errors.Is(err, server.ErrNotAdvancing) {
 				t.Errorf("SetHead = %v, want ErrNotAdvancing", err)
 			}
-			if got := h.server.Head(refA); got != ahead {
+			if got, _ := h.server.Head(refA); got != ahead {
 				t.Errorf("head moved to %+v, want it left at %+v", got, ahead)
 			}
 		})
@@ -144,7 +144,7 @@ func TestAHeadOfTheWrongKindIsRefused(t *testing.T) {
 			first := nextUpdate(t, updates)
 			waitForSync(t, h.server, refA, first.Hash)
 
-			before := h.server.Head(refA)
+			before, _ := h.server.Head(refA)
 
 			next := h.provider.retune(t, refA, 9000)
 			next.Sequence = tc.sequence
@@ -153,7 +153,7 @@ func TestAHeadOfTheWrongKindIsRefused(t *testing.T) {
 			if got := treevial.CodeOf(err); got != treevial.CodeInvalid {
 				t.Errorf("SetHead = %v (code %s), want a refusal with %s", err, got, treevial.CodeInvalid)
 			}
-			if got := h.server.Head(refA); got != before {
+			if got, _ := h.server.Head(refA); got != before {
 				t.Errorf("head moved to %+v, want it left at %+v", got, before)
 			}
 		})
@@ -194,7 +194,7 @@ func TestAHeadSetDuringPreparationIsNotOverwritten(t *testing.T) {
 	if got := nextUpdate(t, updates); got.Sequence != 9 {
 		t.Errorf("client was pushed sequence %d, want the 9 consensus set", got.Sequence)
 	}
-	if got := h.server.Head(refA); got != ahead {
+	if got, _ := h.server.Head(refA); got != ahead {
 		t.Errorf("head = %+v, want %+v", got, ahead)
 	}
 }

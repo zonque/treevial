@@ -32,8 +32,8 @@ func TestHeadIsUnknownForARefNobodyFollows(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if got := srv.Head("refs/heads/nobody/config"); got != (server.Head{}) {
-		t.Errorf("Head() = %+v, want the zero Head", got)
+	if got, held := srv.Head("refs/heads/nobody/config"); held {
+		t.Errorf("Head() = %+v, true; want it unheld", got)
 	}
 }
 

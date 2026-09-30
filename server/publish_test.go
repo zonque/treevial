@@ -22,7 +22,7 @@ func TestAServerNeedsNoProvider(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	if got := srv.Head(someRef); got != head {
+	if got, _ := srv.Head(someRef); got != head {
 		t.Errorf("Head() = %+v, want the published %+v", got, head)
 	}
 }
@@ -44,7 +44,7 @@ func TestAPublishedRefMovesWithNobodyConnected(t *testing.T) {
 	if err := srv.SetHead(someRef, next); err != nil {
 		t.Errorf("SetHead on a published ref: %v", err)
 	}
-	if got := srv.Head(someRef); got != next {
+	if got, _ := srv.Head(someRef); got != next {
 		t.Errorf("Head() = %+v, want %+v", got, next)
 	}
 }
@@ -68,7 +68,7 @@ func TestAPublishedRefStillOnlyMovesForward(t *testing.T) {
 	if err := srv.SetHead(someRef, behind); !errors.Is(err, server.ErrNotAdvancing) {
 		t.Errorf("SetHead = %v, want ErrNotAdvancing", err)
 	}
-	if got := srv.Head(someRef); got != head {
+	if got, _ := srv.Head(someRef); got != head {
 		t.Errorf("head moved to %+v, want it left at %+v", got, head)
 	}
 }
@@ -117,8 +117,8 @@ func TestARefusedPublishLeavesTheRefUnheld(t *testing.T) {
 		t.Fatal("Publish accepted a nil store")
 	}
 
-	if got := srv.Head(someRef); got != (server.Head{}) {
-		t.Errorf("Head() = %+v after a refused Publish, want the zero Head", got)
+	if got, held := srv.Head(someRef); held {
+		t.Errorf("Head() = %+v, true after a refused Publish, want it unheld", got)
 	}
 
 	if err := srv.Publish(someRef, objects.NewStore(), server.Head{Hash: someHash, Sequence: 1}); err != nil {
