@@ -36,8 +36,8 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `WithDeadPeerTimeout`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Provider`, `Head`, `Option`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event`, `Forwarder` | server repositories |
-| `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `ReplaceBlob` | server repositories |
+| `github.com/zonque/treevial/server` | `Server`, `Head`, `Publish`, `Unpublish`, `SetHead`, `Provider`, `Option`, `WithProvider`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event` | server repositories |
+| `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `LoadPack`, `ReplaceBlob` | server repositories |
 | `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
 A client:
@@ -358,16 +358,16 @@ A server, which supplies each client's objects through a `Provider`:
 ```go
 type provider struct{}
 
-func (provider) Prepare(ref string) (*objects.Store, plumbing.Hash, error) {
+func (provider) Prepare(ref string) (*objects.Store, server.Head, error) {
 	store := objects.NewStore()
 	// …build the tree behind ref, keeping a structtree.Builder alongside
 	// it if you will be changing the value later…
-	return store, root, nil
+	return store, server.Head{Hash: root}, nil
 }
 
 func (provider) Release(ref string) { /* drop whatever Prepare set up */ }
 
-srv, err := server.New(provider{})   // and server.WithID("node-3"), to name it
+srv, err := server.New(server.WithProvider(provider{}))   // and WithID, to name it
 if err != nil {
 	log.Fatal(err)
 }
@@ -611,7 +611,7 @@ client before dialling and by the server on what arrives.
 with it:
 
 ```go
-srv, err := server.New(provider{}, server.WithID("node-3"))
+srv, err := server.New(server.WithProvider(provider{}), server.WithID("node-3"))
 ```
 
 The client reads it back off every `Update`, so a log line can say which server
@@ -633,64 +633,103 @@ can. A server that is not named sends no such line at all and is byte for byte
 on the wire what it always was — so naming one is also choosing to require
 clients that understand the line.
 
-## Serving a ref this server does not own
+## Holding a ref the application owns
 
-In a cluster, the node a client happens to be connected to may not be the one
-that owns the ref it is following — and which node that is can change while the
-client sits there. A `Forwarder` fetches the objects from wherever they are and
-the server writes them on as ordinary updates. **The client is told nothing and
-notices nothing**: no redirect, no reconnect, no protocol change. Its connection
-is as stable as the cluster is not.
+A ref can exist because this server holds it rather than because somebody is
+connected to it. `Publish` hands one over — the objects, and the head they are
+at — and from then on the ref needs no subscriber, outlives every subscription,
+and moves whenever the application says so:
 
 ```go
-srv.Forward(server.ForwarderFunc(func(ctx context.Context, req server.Push) (*server.Pack, error) {
-	if weOwn(req.Ref) {
-		return nil, nil            // served from this server's own store
-	}
+srv, err := server.New()               // no provider: published refs alone
 
-	// Ask whoever does. req.Have is what this subscriber has
-	// acknowledged and req.Want the head it should reach, so the
-	// answer is that subscriber's delta and no more.
-	count, body, err := leader.Objects(ctx, req.Ref, req.Have, req.Want)
-	if err != nil {
-		return nil, err
-	}
-
-	return &server.Pack{Objects: count, Body: body, OriginID: leader.ID()}, nil
-}))
+err = srv.Publish(ref, store, server.Head{Hash: root, Sequence: index})
 ```
 
-It is asked **for every push, not once per connection**, which is the point: a
-re-election between two pushes takes effect on the second one, on the
-connection that is already open. The `ctx` is that client's, cancelled when it
-hangs up, so a fetch is not left outstanding for somebody who has gone. An
-error is reported to the client as a refusal — a `*treevial.Error` with
-whatever code the forwarder chose, anything else as `internal`.
+That is what a member of a cluster needs, because the two ways its state
+arrives have opposite shapes. The bulk of it comes from somewhere expensive and
+rare — a database query — and wants paying once, at startup, not when a client
+happens to connect. The changes come frequently and touch almost nothing, and
+each is a `Build(&field)` costing one blob and the trees above it. Neither fits
+a ref that is prepared on first connect and thrown away on last disconnect.
 
-`OriginID` is what reaches the client as `Update.OriginID`, so a forwarded push
-says where its objects came from while `Update.ServerID` still names the server
-the client is connected to. Since the forwarder is asked for every push, a
-re-election shows up as the origin changing from one push to the next on a
-connection that never moved — and leaving `OriginID` empty says nothing rather
-than saying "here".
+So there are two lifetimes, and a ref has one or the other, never both:
 
-Two things stay with the application, deliberately. **How the servers talk to
-each other** is not treevial's business: the leader answers such a fetch with
-`store.SelectSince` and `store.EncodePack`, over whatever transport the cluster
-already has. And **moving the ref** is still `SetHead` — a server that owns
-nothing still learns from its consensus layer that a ref has moved, and says
-so. A forwarder alone pushes nothing, because nothing has told the server there
-is anything to push.
+- **Published** — the application holds it. No `Prepare`, no `Release`,
+  `SetHead` works with nobody connected, and a client that subscribes joins
+  what is already there.
+- **Provider-backed** — `WithProvider` supplies it. Prepared when its first
+  client subscribes and released after its last one leaves, which is what suits
+  a ref built on demand for one device.
 
-One consequence worth knowing before building on it: a forwarded push asks the
-owning node for the delta from a hash this client acknowledged, possibly long
-ago. Whether that node still holds it is a retention question, and the answer
-decides whether the client is served incrementally or has to be resynchronised
-whole.
+### A member and its log
 
-A cluster that serves one client from several of its nodes at once wants the
-next section too: which of two heads is the newer is a question the objects
-cannot answer.
+Every member applies the same entries and builds its own objects. Determinism
+makes the hashes agree — map keys sorted, tree entries in git's canonical
+order, nothing hashed that is not the value — so each serves its own clients
+from its own store and **no objects have to cross between members while the
+cluster runs**:
+
+```go
+// one entry
+cfg.Network.Primary.MTU = mtu
+root, err := builder.Build(&cfg.Network.Primary.MTU)
+err = srv.SetHead(ref, server.Head{Hash: root, Sequence: entry.Index})
+```
+
+`SetHead` reports `ErrUnknownRef` for a ref this member does not hold and
+`ErrNotAdvancing` for an entry it has already seen. Both are ordinary traffic
+in a cluster — a member applies entries for every ref it replicates, and a
+re-delivered entry carries a head that has been passed — so both are sentinels
+rather than sentences to match on.
+
+### Snapshots, and why a root hash is one
+
+The awkward part of most consensus integrations is that a snapshot must be a
+point-in-time view taken at once and written out later, while the state keeps
+changing underneath. Here that is free: the store is append-only and content
+addressed, so a point-in-time view **is a root hash**.
+
+| what the consensus layer asks | what it is here |
+|---|---|
+| take a snapshot | read the ref's current `Head`. No copying, no locking |
+| write it out | `SelectSince(zero, root)` then `EncodePack`, while entries keep arriving |
+| restore one | `LoadPack`, decode the value, rebuild |
+
+Writing one out is safe against everything else happening to the store, because
+adding objects cannot change what an existing root reaches — and a store may be
+read while it is appended to.
+
+Restoring is three steps and checks itself:
+
+```go
+n, err := store.LoadPack(r)                                       // objects
+err = structtree.ApplySince(&cfg, store, plumbing.ZeroHash, root) // the value
+got, err := builder.Build()                                       // one full rebuild
+
+if got != root {
+	// this member did not reproduce the state the snapshot named
+}
+```
+
+A member that does not hold the ref yet then publishes it; one that already
+does moves its head with `SetHead`, since the objects went into the store the
+ref already has. The full `Build` is the expensive walk — hashing, no database
+— and it is what leaves the builder able to do the cheap incremental builds
+that follow. Determinism turns *did I restore correctly?* into an equality
+test, which is worth more than skipping the walk.
+
+Nothing is ever removed from a store, so a restore leaves the objects it
+replaced behind and every connected subscriber goes on being served
+incrementally across it. Reclaiming them is `Unpublish` and then `Publish` with
+a new store, which ends that ref's subscriptions — the node is saying it no
+longer holds the objects they were being served from — and costs them a
+reconnect. Rare by construction, and stated rather than hidden.
+
+**What stays outside.** How the members talk to each other, what carries a
+snapshot, which of them is the leader, and where the state comes from in the
+first place: none of it is treevial's business. It holds the objects, moves the
+heads, and pushes.
 
 ## Saying which state is newer
 
@@ -742,9 +781,9 @@ checked against nothing, because there is nothing to check it against.
 ```go
 if err := srv.SetHead(ref, server.Head{Hash: root, Sequence: index}); err != nil {
 	switch {
-	case errors.Is(err, server.ErrNoSubscribers):
-		// Nobody here follows this ref. Ordinary: a node applies
-		// entries for every ref it replicates.
+	case errors.Is(err, server.ErrUnknownRef):
+		// This member does not hold that ref. Ordinary: a member
+		// applies entries for every ref it replicates.
 	case errors.Is(err, server.ErrNotAdvancing):
 		// A re-delivered entry, or one that moved some other ref.
 	default:
@@ -771,9 +810,9 @@ no locking, so each client needs its own.
 
 ## Per-ref data, released by the last to leave
 
-The server owns no objects of its own. It asks the `Provider` for a ref's graph
-when the first client subscribes to it, and hands it back once the last one has
-gone — once per ref, however many clients pass through, and never overlapping:
+This is the other lifetime, the one for a ref built on demand. The server owns
+no objects of its own: it asks the `Provider` for a ref's graph when the first
+client subscribes to it, and hands it back once the last one has gone — once per ref, however many clients pass through, and never overlapping:
 a `Release` always finishes before that ref can be prepared again.
 
 Give each ref a store of its own and releasing one is nothing more than
@@ -804,7 +843,7 @@ the retransmit default, minutes away.
 
 ```go
 conn, err := client.Dial(ctx, addr, client.WithDeadPeerTimeout(90*time.Second))
-srv, err := server.New(provider{}, server.WithDeadPeerTimeout(90*time.Second))
+srv, err := server.New(server.WithProvider(provider{}), server.WithDeadPeerTimeout(90*time.Second))
 ```
 
 One duration, because the two mechanisms that can notice are complementary

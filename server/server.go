@@ -8,6 +8,14 @@
 // of prepared objects and each moves at its own pace, so a slow subscriber
 // delays nobody else.
 //
+// A ref has one of two lifetimes. The application may hold it itself with
+// [Server.Publish], in which case it needs no subscriber, outlives every
+// subscription and moves whenever the application says so — which is what a
+// member of a cluster wants, since the state behind a ref is front-loaded and
+// then moved by small changes. Or a [Provider] supplies it on demand, prepared
+// when its first client subscribes and released after its last one leaves. A
+// ref is one or the other, never both.
+//
 // A server may name itself, and every client that registers is told that name
 // — a label for logs, not a credential, and not something the server acts on.
 //

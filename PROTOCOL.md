@@ -100,20 +100,16 @@ many objects follow in decimal; it may be `0`, in which case the client is
 already current and the flush-pkt follows immediately.
 
 Whatever follows the count is a **trailer**: a named field, `<key>=<value>`.
-Two are defined, and both are optional.
+One is defined, and it is optional.
 
 | key | value |
 |---|---|
 | `seq` | the ordinal of the head this update carries, in decimal |
-| `origin` | the name of the server the objects were fetched from |
 
-They may appear in either order, and each may appear once. A value may itself
-contain `=`, so only the first one separates the key from the value:
-`origin=a=b` names the server `a=b`. A line carrying an unknown key, a
-repeated key, a key with no value or an empty one, or `seq=0`, is refused —
-a client that acted on half a line it did not understand would be worse than
-one that turned it away. A server with neither trailer to send writes three
-fields and stops.
+It may appear once. A line carrying an unknown key, a repeated key, a key with
+no value or an empty one, or `seq=0`, is refused — a client that acted on half
+a line it did not understand would be worse than one that turned it away. A
+server with no trailer to send writes three fields and stops.
 
 `seq` is how a client can tell which of two heads is the newer. The protocol
 carries trees, not commits, so there is no parent pointer anywhere in the
@@ -129,13 +125,8 @@ Ordering it gives, agreement it does not, quite: equal ordinals mean equal
 heads, while unequal ones need not mean unequal heads, since a server may be
 some entries behind on a log whose entries did not touch this ref.
 
-`origin` names where a push's objects came from, when the server did not serve
-them from its own store. Absent means the server named no origin, which covers
-both a push served from here and one forwarded by something that did not say
-where from.
-
-Neither trailer is a credential, and a client is served exactly the same
-whichever of them a server sends.
+The trailer is not a credential, and a client is served exactly the same
+whether or not a server sends it.
 
 The pack is a standard git packfile, split across as many pkt-lines as it takes
 and closed by a flush-pkt. It may be split at any point, so a reader has to
@@ -179,9 +170,8 @@ Had that client named itself `printer-7`, its first line would read
 `005cregister refs/heads/printer-7/config 0000…0000 printer-7` — the same line
 with one more field — and nothing else about the exchange would differ.
 
-Had the server been named `node-3`, its refs ordered by a consensus layer, and
-the second push forwarded from a server called `node-5`, the same exchange
-would read:
+Had the server been named `node-3` and its refs ordered by a consensus layer,
+the same exchange would read:
 
 ```
 client → 0052register refs/heads/printer-7/config 0000000000000000000000000000000000000000
@@ -191,23 +181,22 @@ server → 037a<886 bytes of pack>
 server → 0000
 client → 0031ack 35ae729ecbb6c621dc5bc6ac2d8efec6f83c2805
 
-         … the server's data changes, and it no longer owns the ref …
+         … the server's data changes …
 
-server → 004bupdate 30e5ce8082820717b3fb5fec3e962c1d62103e14 4 seq=99 origin=node-5
+server → 003dupdate 30e5ce8082820717b3fb5fec3e962c1d62103e14 4 seq=99
 server → 015f<347 bytes of pack>
 server → 0000
 client → 0031ack 30e5ce8082820717b3fb5fec3e962c1d62103e14
 ```
 
 The server's name costs 18 bytes once, charged to the connection rather than to
-any push. The trailers are charged per push and cost seven bytes for `seq=98`
-and fourteen for `origin=node-5`, so the first update is 956 bytes here and the
-second 430.
+any push. The sequence is charged per push and costs seven bytes at these
+values, so the first update is 956 bytes here and the second 416.
 
 Seventeen objects the first time and four the second, because the four are all
 that moved: the second pack is 347 bytes against 886. Counting the lines in
 full — the update message, the headers, the flush-pkt — an update with no
-trailers is 949 bytes on the wire for the first push and 409 for the second,
+trailer is 949 bytes on the wire for the first push and 409 for the second,
 which is what both ends report having exchanged.
 
 ## Connection lifetime
@@ -226,9 +215,9 @@ need not know they exist. The only effect one can observe is the one any
 hang-up has: the connection ends.
 
 One connection carries at most one `server` line, since a server's name does
-not change while it is running. A `seq` is decided per push, like an `origin`,
-so one connection may carry any number of them — but never a lower one after a
-higher one, since a ref that is ordered at all moves only forward.
+not change while it is running. A `seq` belongs to the head rather than to the
+connection, so one carries as many as the ref has states — but never a lower
+one after a higher one, since a ref that is ordered at all moves only forward.
 
 One connection carries one subscription, but a ref may have any number of
 subscribers: a second connection naming a ref somebody else is already

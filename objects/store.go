@@ -1,7 +1,14 @@
 // Package objects holds the git object model side of treevial: an in-memory
 // object store, the object-set arithmetic that turns a client's "have" set into
-// the objects it still needs, and packfile encoding. Nothing here touches the
-// filesystem.
+// the objects it still needs, and packfile encoding and decoding. Nothing here
+// touches the filesystem.
+//
+// A store moves a whole graph out through [Store.EncodePack] and back in
+// through [Store.LoadPack], which is what taking a snapshot of one and
+// restoring it from another comes to. It may be read while it is being
+// appended to, because adding objects cannot change what an existing root
+// reaches; nothing can be removed, so reclaiming one means a new store rather
+// than a pruned one.
 package objects
 
 import (
