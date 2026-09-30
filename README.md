@@ -36,9 +36,9 @@ go get github.com/zonque/treevial
 | `github.com/zonque/treevial` | The shared contract: `ValidateRef`, `Error`, `CodeOf` | both sides need it |
 | `github.com/zonque/treevial/client` | `Dial`, `WithID`, `WithHistory`, `WithDeadPeerTimeout`, `Subscribe`, `Resume`, `Update`, `Received`, `Sent` | client repositories |
 | `github.com/zonque/treevial/receive` | `Interpret`, `Handler`, `Graph`, `Diff`, `Listing`, `ListingSince`, `Retain` | client repositories |
-| `github.com/zonque/treevial/server` | `Server`, `Head`, `Publish`, `Unpublish`, `SetHead`, `Provider`, `Option`, `WithProvider`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event` | server repositories |
-| `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `LoadPack`, `ReplaceBlob` | server repositories |
-| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
+| `github.com/zonque/treevial/server` | `Server`, `Head`, `Publish`, `Unpublish`, `SetHead`, `Sweep`, `Provider`, `Option`, `WithProvider`, `WithID`, `WithDeadPeerTimeout`, `Subscription`, `Watch`, `Event` | server repositories |
+| `github.com/zonque/treevial/objects` | `Store`, `SelectSince`, `EncodePack`, `LoadPack`, `Compact`, `Has`, `ReplaceBlob` | server repositories |
+| `github.com/zonque/treevial/structtree` | `Walk`, `Build`, `Builder`, `Retarget`, `Apply`, `ApplySince`, `Mapper` | both sides, when syncing a Go value |
 
 A client:
 
@@ -721,10 +721,84 @@ test, which is worth more than skipping the walk.
 
 Nothing is ever removed from a store, so a restore leaves the objects it
 replaced behind and every connected subscriber goes on being served
-incrementally across it. Reclaiming them is `Unpublish` and then `Publish` with
-a new store, which ends that ref's subscriptions — the node is saying it no
-longer holds the objects they were being served from — and costs them a
-reconnect. Rare by construction, and stated rather than hidden.
+incrementally across it. Reclaiming them is a sweep, below.
+
+### Sweeping
+
+Now and then the data behind the refs changes in bulk — a re-import, a
+migration, a tenant reloaded. Most heads move, some refs stop existing, and the
+objects behind the old state are garbage nothing will ever ask for again. A
+sweep is that moment:
+
+```go
+compacted, dropped, err := store.Compact(surviving...)   // the live roots
+
+reset, err := srv.Sweep(compacted, map[string]server.Head{
+	movedRef: {Hash: newRoot, Sequence: index},
+	goneRef:  {Sequence: index},               // no hash: this ref's state is gone
+})
+
+for _, b := range builders {
+	err = b.Retarget(compacted)                // every one, moved or not
+}
+```
+
+`Compact` does not delete. It walks the roots and puts what they reach into a
+new store, and the old one is left exactly as it was — which is the point: a
+push that has already chosen its objects and is halfway through encoding holds
+that store through its own pointer and finishes undisturbed. When the last such
+push is done, nothing references it and Go frees precisely what the new store
+did not take. It is also cheap, because moving an object is a map insert with a
+shared pointer: what a compaction costs is in how many objects survive, not how
+big they are.
+
+`Sweep` names only the refs whose heads move; every other published ref keeps
+the head it has. It checks everything before it changes anything — every named
+ref published, every surviving head present in the new store, every named head
+advancing — so forgetting to retain a ref's head is an error here rather than a
+handful of dead subscriptions later. It returns how many subscribers lost the
+state they were holding.
+
+Subscribers are not disturbed for nothing. One whose ref did not move and whose
+tree survived the compaction is not woken at all, even though the store beneath
+it was replaced. One whose tree is gone has its baseline reset and is sent its
+ref's whole state.
+
+**Every builder must be retargeted**, moved or not, since the store is replaced
+for all of them. `Retarget` keeps everything the builder knows and changes only
+where it writes, which is what stops a sweep from costing a full rebuild per
+ref.
+
+### A ref that holds nothing
+
+`Head{Sequence: n}` — a head with no hash — is a ref that is held and empty.
+Its subscribers are sent `update 0000…0000 0`, which the protocol has always
+been able to say, and **they stay subscribed**: the ref is empty, not gone.
+Give it a real head later and whoever is still there is sent the whole tree.
+
+A client can tell from the update alone:
+
+```go
+if u.Hash.IsZero() {
+	// what this client held has been dropped
+	cfg = &Config{}
+	_, err := u.Graph.Retain(u.Hash)   // a zero root retains nothing, so this empties it
+	continue
+}
+```
+
+Two things to know. `Retain(u.Previous, u.Hash)` — the pair prescribed above
+for incremental application — keeps `Previous`, which on a void update is
+precisely the state that was just dropped; so a client sweeping that way holds
+one dead state until its next update. `Retain(u.Hash)` lets go of that too, and
+`WithHistory(1)` arrives at the same place by itself. And the Go value the
+client has been applying into is its own to reset, since `ApplySince` cannot
+decode a tree that does not exist.
+
+Being void is not being unpublished. `Unpublish` says the node no longer holds
+the ref at all and ends its subscriptions; a void head says the ref is still
+here and has nothing in it. `Head(ref)` reports both — where the ref points,
+and whether it is held.
 
 **What stays outside.** How the members talk to each other, what carries a
 snapshot, which of them is the leader, and where the state comes from in the

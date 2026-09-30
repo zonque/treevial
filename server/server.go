@@ -16,6 +16,11 @@
 // when its first client subscribes and released after its last one leaves. A
 // ref is one or the other, never both.
 //
+// A ref the application holds may point nowhere: a [Head] with no hash is a
+// ref whose state is gone, and its subscribers are told so and stay following
+// it. [Server.Sweep] is the moment at which the objects behind state that has
+// been replaced in bulk are reclaimed and such a ref is emptied.
+//
 // A server may name itself, and every client that registers is told that name
 // — a label for logs, not a credential, and not something the server acts on.
 //

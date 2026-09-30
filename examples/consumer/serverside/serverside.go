@@ -29,14 +29,15 @@ var (
 	_ func(time.Duration) server.Option              = server.WithDeadPeerTimeout
 	_ func(*server.Server) string                    = (*server.Server).ID
 
-	_ func(*server.Server, net.Listener) error                        = (*server.Server).Serve
-	_ func(*server.Server)                                            = (*server.Server).Stop
-	_ func(*server.Server, string, server.Head) error                 = (*server.Server).SetHead
-	_ func(*server.Server, string, *objects.Store, server.Head) error = (*server.Server).Publish
-	_ func(*server.Server, string) error                              = (*server.Server).Unpublish
-	_ func(*server.Server, string) (server.Head, bool)                = (*server.Server).Head
-	_ func(*server.Server) []server.Subscription                      = (*server.Server).Subscribers
-	_ func(*server.Server, server.Watcher)                            = (*server.Server).Watch
+	_ func(*server.Server, net.Listener) error                                  = (*server.Server).Serve
+	_ func(*server.Server)                                                      = (*server.Server).Stop
+	_ func(*server.Server, string, server.Head) error                           = (*server.Server).SetHead
+	_ func(*server.Server, string, *objects.Store, server.Head) error           = (*server.Server).Publish
+	_ func(*server.Server, string) error                                        = (*server.Server).Unpublish
+	_ func(*server.Server, *objects.Store, map[string]server.Head) (int, error) = (*server.Server).Sweep
+	_ func(*server.Server, string) (server.Head, bool)                          = (*server.Server).Head
+	_ func(*server.Server) []server.Subscription                                = (*server.Server).Subscribers
+	_ func(*server.Server, server.Watcher)                                      = (*server.Server).Watch
 )
 
 // Where a ref points, and the two ways a head that may not move it is
@@ -107,6 +108,8 @@ var (
 	_ func(*objects.Store, plumbing.Hash) ([]byte, bool)                          = (*objects.Store).Blob
 	_ func(*objects.Store, plumbing.Hash) (*object.Tree, error)                   = (*objects.Store).TreeObject
 	_ func(*objects.Store, io.Reader) (int, error)                                = (*objects.Store).LoadPack
+	_ func(*objects.Store, ...plumbing.Hash) (*objects.Store, int, error)         = (*objects.Store).Compact
+	_ func(*objects.Store, plumbing.Hash) bool                                    = (*objects.Store).Has
 	_ func(*objects.Store, plumbing.Hash, plumbing.Hash) ([]plumbing.Hash, error) = (*objects.Store).SelectSince
 	_ func(*objects.Store, io.Writer, []plumbing.Hash) (plumbing.Hash, error)     = (*objects.Store).EncodePack
 	_ func(*objects.Store, plumbing.Hash, string, []byte) (plumbing.Hash, error)  = (*objects.Store).ReplaceBlob
@@ -114,4 +117,5 @@ var (
 	_ func(*objects.Store, any) (plumbing.Hash, error)         = structtree.Build
 	_ func(*objects.Store, any) (*structtree.Builder, error)   = structtree.NewBuilder
 	_ func(*structtree.Builder, ...any) (plumbing.Hash, error) = (*structtree.Builder).Build
+	_ func(*structtree.Builder, *objects.Store) error          = (*structtree.Builder).Retarget
 )

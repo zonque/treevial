@@ -22,7 +22,9 @@ payload and carries no meaning.
 
 ## Messages
 
-Hashes travel as 40 lowercase hexadecimal digits. Forty zeros mean "no hash".
+Hashes travel as 40 lowercase hexadecimal digits. Forty zeros mean "no hash":
+from a client, that it holds nothing, and on an `update`, that the ref's state
+is gone — no objects follow and the subscription continues.
 
 ### Client to server
 
@@ -98,6 +100,10 @@ update <hash> <object-count> [<key>=<value> ...]
 `update` announces the new state of the client's ref. `<object-count>` is how
 many objects follow in decimal; it may be `0`, in which case the client is
 already current and the flush-pkt follows immediately.
+
+`<hash>` may be forty zeros, which says the ref's state is gone rather than
+changed: what the client holds is void, no objects follow, and the subscription
+carries on. A ref that is given a real head afterwards sends the whole of it.
 
 Whatever follows the count is a **trailer**: a named field, `<key>=<value>`.
 One is defined, and it is optional.

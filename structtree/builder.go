@@ -64,6 +64,10 @@ import (
 // Go will not let a field inside one be assigned to either. Keep pointers in a
 // map whose entries you mean to change one at a time.
 //
+// A builder can follow its objects into another store with
+// [Builder.Retarget], which is what lets one survive a compaction without
+// redoing the walk.
+//
 // A Builder is not safe for concurrent use.
 type Builder struct {
 	mapper Mapper

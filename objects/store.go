@@ -7,8 +7,13 @@
 // through [Store.LoadPack], which is what taking a snapshot of one and
 // restoring it from another comes to. It may be read while it is being
 // appended to, because adding objects cannot change what an existing root
-// reaches; nothing can be removed, so reclaiming one means a new store rather
-// than a pruned one.
+// reaches.
+//
+// Nothing is ever removed. Reclaiming what a store no longer needs is
+// [Store.Compact], which puts what the roots it is given reach into a new
+// store and leaves this one untouched — so whoever is still reading it may go
+// on doing so, and what the new store did not take is freed once they are
+// done.
 package objects
 
 import (
