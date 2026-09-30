@@ -110,6 +110,35 @@ func (m Mapper) NewBuilder(store *objects.Store, v any) (*Builder, error) {
 	return &Builder{mapper: m, store: store, value: v}, nil
 }
 
+// Retarget points the builder at another store, keeping everything it knows.
+//
+// A builder holds the store it writes into and, apart from that, nothing that
+// depends on which store that is: its node tree holds hashes and its index
+// holds addresses. After a store has been compacted, the objects the builder
+// last built are still there, under the same hashes, in a different store — so
+// this is how a builder survives one. The alternative is a new builder and a
+// full [Builder.Build], which is the whole hashing walk, done because the
+// store changed identity and for no other reason.
+//
+// The store must hold the tree the builder last built. Holding a tree means
+// holding everything beneath it, so that one check answers for the whole of
+// what the builder is about to reuse, and a store that does not is refused
+// rather than written into. A builder that has built nothing yet has nothing
+// to look for and may be pointed anywhere.
+func (b *Builder) Retarget(store *objects.Store) error {
+	if store == nil {
+		return fmt.Errorf("structtree: a builder needs a store to write into")
+	}
+
+	if b.root != nil && !store.Has(b.root.tree) {
+		return fmt.Errorf("structtree: the store does not hold the tree at %s", b.root.tree)
+	}
+
+	b.store = store
+
+	return nil
+}
+
 // Build stores the value's tree and returns the root hash, redoing the parts
 // reached by the given pointers and leaving the rest as it was. With no
 // pointers it redoes everything, which is always correct.

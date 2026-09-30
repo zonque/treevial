@@ -337,3 +337,105 @@ func TestABuilderNeedsAPointerToAStruct(t *testing.T) {
 		t.Error("NewBuilder accepted a pointer to a non-struct")
 	}
 }
+
+// After a compaction the objects a builder last wrote are in a different store
+// under the same hashes, so it is pointed at that one rather than rebuilt from
+// nothing — which is the expensive walk this exists to avoid paying twice.
+func TestRetargetKeepsTheBuilderAtWorkOnANewStore(t *testing.T) {
+	store := objects.NewStore()
+
+	cfg := sampleConfig()
+
+	b, err := structtree.NewBuilder(store, cfg)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	root, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	compacted, _, err := store.Compact(root)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if err := b.Retarget(compacted); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+
+	// One field, declared, so it is the incremental path under test: it has
+	// to find its way about in the new store.
+	cfg.Primary.MTU = 9000
+
+	moved, err := b.Build(&cfg.Primary.MTU)
+	if err != nil {
+		t.Fatalf("Build after Retarget: %v", err)
+	}
+	if moved == root {
+		t.Fatal("the head did not move")
+	}
+
+	if !compacted.Has(moved) {
+		t.Error("the retargeted builder wrote somewhere other than the store it was given")
+	}
+
+	want, err := structtree.Build(objects.NewStore(), cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if moved != want {
+		t.Errorf("the retargeted builder produced %s, want %s", moved, want)
+	}
+}
+
+func TestRetargetRefusesAStoreWithoutTheBuildersTree(t *testing.T) {
+	store := objects.NewStore()
+
+	b, err := structtree.NewBuilder(store, sampleConfig())
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	root, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if err := b.Retarget(objects.NewStore()); err == nil {
+		t.Fatal("Retarget accepted a store without the tree the builder built")
+	}
+
+	// Still writing where it was, so the refusal cost nothing.
+	again, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build after a refused Retarget: %v", err)
+	}
+	if again != root {
+		t.Errorf("rebuilt to %s, want %s", again, root)
+	}
+}
+
+// A builder that has built nothing has nothing to look for, so it may be
+// pointed anywhere.
+func TestAFreshBuilderMayBeRetargetedAnywhere(t *testing.T) {
+	b, err := structtree.NewBuilder(objects.NewStore(), sampleConfig())
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+
+	store := objects.NewStore()
+
+	if err := b.Retarget(store); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+
+	root, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !store.Has(root) {
+		t.Error("the retargeted builder wrote somewhere else")
+	}
+}
