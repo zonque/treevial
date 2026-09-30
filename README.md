@@ -733,13 +733,20 @@ sweep is that moment:
 ```go
 compacted, dropped, err := store.Compact(surviving...)   // the live roots
 
-reset, err := srv.Sweep(compacted, map[string]server.Head{
+heads := map[string]server.Head{
 	movedRef: {Hash: newRoot, Sequence: index},
 	goneRef:  {Sequence: index},               // no hash: this ref's state is gone
-})
+}
 
-for _, b := range builders {
-	err = b.Retarget(compacted)                // every one, moved or not
+reset, err := srv.Sweep(compacted, heads)
+
+for ref, b := range builders {
+	if head, named := heads[ref]; named && head.Hash.IsZero() {
+		delete(builders, ref)              // voided: nothing left to follow
+		continue
+	}
+
+	err = b.Retarget(compacted)                // every other one, moved or not
 }
 ```
 
@@ -768,6 +775,26 @@ ref's whole state.
 for all of them. `Retarget` keeps everything the builder knows and changes only
 where it writes, which is what stops a sweep from costing a full rebuild per
 ref.
+
+**A voided ref is the one exception.** Its tree is exactly what the sweep
+reclaimed, so there is nothing in the new store for its builder to follow and
+`Retarget` refuses — correctly, since a builder writing into a store that
+cannot serve what it thinks is there would produce heads nobody can be sent.
+Drop that builder. If the ref is given state again later, it starts from a new
+builder and a full `Build`:
+
+```go
+config := load(ref)                        // from wherever the state comes
+
+b, err := structtree.NewBuilder(store, config)
+root, err := b.Build()                     // the whole walk, as at startup
+
+err = srv.SetHead(ref, server.Head{Hash: root, Sequence: index})
+```
+
+That is the expensive walk, paid again for that ref alone — which is the honest
+price of having thrown its objects away, and the reason a sweep is a moment the
+application chooses rather than something that happens on its own.
 
 ### A ref that holds nothing
 
