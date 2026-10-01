@@ -14,3 +14,8 @@
 # not part of the repository: that module carries its own replace directive.
 go.work
 go.work.sum
+
+# Editor swap files, which land here whenever something is open at the repo
+# root.
+*.swp
+*.swo

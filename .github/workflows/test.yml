@@ -39,6 +39,13 @@ jobs:
       - name: test
         run: go test -race ./...
 
+      # The benchmarks carry figures quoted in the README and in structtree's
+      # own documentation, so they have to go on compiling and running. One
+      # iteration each measures nothing and takes a second and a half, which is
+      # all this is for.
+      - name: benchmarks
+        run: go test -run '^$' -bench . -benchtime 1x ./...
+
       # A separate module with its own go.mod, so ./... above does not reach
       # it. The suite builds it through TestSeparateModuleConsumersBuild;
       # vetting it needs its own step.
