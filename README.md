@@ -438,11 +438,14 @@ register line — the tree the client last finished interpreting — tells the
 server both what to send and exactly where the client stands. Neither side keeps an inventory of
 objects.
 
-`Store.SelectSince(from, to)` walks the new tree and prunes any subtree already
-reachable from `from`, which is what makes an update after a small change cost
-a few objects instead of the whole graph. The `Ack` is how the server learns
-the client has caught up; until it arrives the client counts as behind. A
-client that reconnects and names what it holds is sent nothing at all.
+`Store.SelectSince(from, to)` descends the two trees side by side and selects
+what the new one holds that the old one did not hold at the same name. A
+subtree whose hash has not moved is recognised from its parent's entry alone,
+so the walk goes no further than the change — which is what makes an update
+after a small change cost a few objects instead of the whole graph. The `Ack`
+is how the server learns the client has caught up; until it arrives the client
+counts as behind. A client that reconnects and names what it holds is sent
+nothing at all.
 
 This is per subscriber, not per ref: two clients following one ref from
 different starting points are sent different objects, worked out from the same
@@ -456,18 +459,33 @@ goos: linux
 goarch: amd64
 pkg: github.com/zonque/treevial/objects
 cpu: AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics
-BenchmarkSelectSinceFromNothing-16      272       8578397 ns/op    13078253 B/op    536 allocs/op
-BenchmarkSelectSinceOneLeafMoved-16     321       7492818 ns/op     6024082 B/op    512 allocs/op
-BenchmarkEncodePackOneLeafMoved-16      368       6413285 ns/op      814673 B/op     43 allocs/op
+BenchmarkSelectSinceFromNothing-16      141       8453267 ns/op    13076848 B/op    537 allocs/op
+BenchmarkSelectSinceOneLeafMoved-16    2139        611399 ns/op         152 B/op      3 allocs/op
+BenchmarkEncodePackOneLeafMoved-16      262       4539733 ns/op     1076835 B/op     40 allocs/op
 ```
 
-Working out that a one-field move owes a subscriber three objects takes 7.5 ms
-— not far off the 8.6 ms it takes to work out that a subscriber holding nothing
-owes the whole sixty thousand. Pruning saves the sending, not the deciding: a
-subtree can only be pruned once the walk has established that the client is
-standing on it. A `Store` remembers what each tree object parses to, which is
-where the allocation counts above come from — five hundred rather than the
-three hundred thousand a re-parse of every tree on every walk would cost.
+Working out that a one-field move owes a subscriber three objects takes 0.6 ms
+and three allocations, against the 8.5 ms it takes to work out that a
+subscriber holding nothing owes the whole sixty thousand. The comparison is
+what buys that: establishing where the client stands costs nothing when the
+answer is written in the entry that led to the subtree, where collecting
+everything the client holds costs a traversal of the whole tree it already had,
+every time, for every subscriber. Both entry lists are in git's canonical
+order, so the old one is advanced in step with the new rather than indexed, and
+no map is built per tree — which is where the three allocations come from. A
+`Store` also remembers what each tree object parses to, so the trees the walk
+does reach are parsed once ever rather than once per subscriber.
+
+What a comparison by position cannot see is reuse across paths: an object the
+client holds under another name looks new and is selected again. That is a
+superset of what the client needs rather than a gap, which is the safe
+direction, and while the selection is small it costs a handful of objects —
+cheaper than the traversal it would take to rule out. Once the selection comes
+to more than half of what the store holds, the change is a bulk one rather than
+the incremental one the comparison is for, so `SelectSince` falls back on
+collecting what the client holds in full and selects against that instead. A
+renamed subtree is then pruned wherever it turns up, at the cost of the
+traversal — paid only on the moves that are already large.
 
 ## What went over the wire
 
