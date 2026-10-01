@@ -142,41 +142,18 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 			continue
 		}
 
-		path := field.Name
-		if prefix != "" {
-			path = prefix + "/" + field.Name
-		}
+		path := join(prefix, field.Name)
 
-		target := v.Field(i)
-
+		// Only a declared field could have carried the tag this
+		// recommends, which is why it is asked here rather than of
+		// every member.
 		if m.isLeaf(field) {
 			if err := m.unusableMap(field); err != nil {
 				return fmt.Errorf("structtree: %s: %w", path, err)
 			}
-
-			if err := m.applyLeaf(target, path, vw); err != nil {
-				return err
-			}
-
-			continue
 		}
 
-		sub, st, err := vw.subtree(field.Name)
-		if err != nil {
-			return fmt.Errorf("structtree: %s: %w", path, err)
-		}
-
-		switch st {
-		case unchanged:
-			continue
-		case missing:
-			// Nothing beneath this path any more.
-			target.SetZero()
-
-			continue
-		}
-
-		if err := m.applyInto(target, path, sub); err != nil {
+		if err := m.applyMember(vw, field, field.Name, path, inPlace{v.Field(i)}); err != nil {
 			return err
 		}
 	}
@@ -184,29 +161,121 @@ func (m Mapper) apply(v reflect.Value, prefix string, vw view) error {
 	return nil
 }
 
-// applyLeaf decodes one leaf into its field, clearing the field first so that
-// what the view carries is all that ends up there.
-func (m Mapper) applyLeaf(target reflect.Value, path string, vw view) error {
-	name := path[strings.LastIndexByte(path, '/')+1:]
+// slot is where one member of a value is written. A struct field and a slice
+// element are addressable and are filled where they sit; a map hands out copies
+// of its entries, so one has to be built and put back.
+//
+// Having the three behind this is what keeps a single copy of the rules about
+// when to clear a member, when to decode into it and when to leave it alone.
+type slot interface {
+	// current returns a settable value holding what the slot holds now, so
+	// that parts of it the view calls unchanged survive.
+	current() reflect.Value
+	// fresh returns a settable zero value of the slot's type.
+	fresh() reflect.Value
+	// store puts v back, which a slot filled where it sits has already had
+	// done to it.
+	store(v reflect.Value)
+	// clear empties the slot: the tree is the source of truth, so a member
+	// it does not carry is not left holding something stale.
+	clear()
+}
 
-	data, st, err := vw.leaf(name)
+// inPlace is a member that can be written where it sits.
+type inPlace struct {
+	value reflect.Value
+}
+
+func (p inPlace) current() reflect.Value { return p.value }
+
+func (p inPlace) fresh() reflect.Value {
+	p.value.SetZero()
+
+	return p.value
+}
+
+func (p inPlace) store(reflect.Value) {}
+
+func (p inPlace) clear() { p.value.SetZero() }
+
+// entry is one entry of a map, which has no address of its own.
+type entry struct {
+	target reflect.Value
+	key    reflect.Value
+}
+
+func (e entry) current() reflect.Value {
+	value := e.fresh()
+
+	if existing := e.target.MapIndex(e.key); existing.IsValid() {
+		value.Set(existing)
+	}
+
+	return value
+}
+
+func (e entry) fresh() reflect.Value {
+	return reflect.New(e.target.Type().Elem()).Elem()
+}
+
+func (e entry) store(v reflect.Value) { e.target.SetMapIndex(e.key, v) }
+
+func (e entry) clear() { e.target.SetMapIndex(e.key, reflect.Value{}) }
+
+// applyMember fills one named member of a value from the view, whether it is a
+// leaf to decode or a subtree to descend into. path is carried for error
+// messages; name is what the view is asked about.
+func (m Mapper) applyMember(vw view, field reflect.StructField, name, path string, sl slot) error {
+	if m.isLeaf(field) {
+		data, st, err := vw.leaf(name)
+		if err != nil {
+			return fmt.Errorf("structtree: %s: %w", path, err)
+		}
+
+		switch st {
+		case unchanged:
+			return nil
+		case missing:
+			sl.clear()
+
+			return nil
+		}
+
+		// Cleared first, so what the view carries is all that ends up
+		// there.
+		target := sl.fresh()
+
+		if err := m.decode(data, target); err != nil {
+			return fmt.Errorf("structtree: decode %s: %w", path, err)
+		}
+
+		sl.store(target)
+
+		return nil
+	}
+
+	sub, st, err := vw.subtree(name)
 	if err != nil {
 		return fmt.Errorf("structtree: %s: %w", path, err)
 	}
 
-	if st == unchanged {
+	switch st {
+	case unchanged:
+		return nil
+	case missing:
+		// Nothing beneath this path any more.
+		sl.clear()
+
 		return nil
 	}
 
-	target.SetZero()
+	target := sl.current()
 
-	if st == missing {
-		return nil
+	if err := m.applyInto(target, path, sub); err != nil {
+		return err
 	}
 
-	if err := m.decode(data, target); err != nil {
-		return fmt.Errorf("structtree: decode %s: %w", path, err)
-	}
+	sl.store(target)
 
 	return nil
 }
@@ -284,66 +353,20 @@ func (m Mapper) applyMap(target reflect.Value, path string, vw view) error {
 		target.Set(reflect.MakeMapWithSize(t, len(names)))
 	}
 
-	elem := reflect.StructField{Type: t.Elem()}
+	// A map value has no struct field of its own, so the leaf rule is asked
+	// about a synthesised one carrying the key as its name.
+	field := reflect.StructField{Type: t.Elem()}
 	seen := make(map[string]bool, len(names))
 
 	for _, name := range names {
 		seen[name] = true
+		field.Name = name
 
 		key := reflect.ValueOf(name).Convert(t.Key())
-		elem.Name = name
 
-		if m.isLeaf(elem) {
-			data, st, err := vw.leaf(name)
-			if err != nil {
-				return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
-			}
-
-			switch st {
-			case unchanged:
-				continue
-			case missing:
-				target.SetMapIndex(key, reflect.Value{})
-
-				continue
-			}
-
-			value := reflect.New(t.Elem()).Elem()
-			if err := m.decode(data, value); err != nil {
-				return fmt.Errorf("structtree: decode %s/%s: %w", path, name, err)
-			}
-
-			target.SetMapIndex(key, value)
-
-			continue
-		}
-
-		sub, st, err := vw.subtree(name)
-		if err != nil {
-			return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
-		}
-
-		switch st {
-		case unchanged:
-			continue
-		case missing:
-			target.SetMapIndex(key, reflect.Value{})
-
-			continue
-		}
-
-		// Start from what is there, so parts of an entry the view calls
-		// unchanged survive a change elsewhere in it.
-		value := reflect.New(t.Elem()).Elem()
-		if existing := target.MapIndex(key); existing.IsValid() {
-			value.Set(existing)
-		}
-
-		if err := m.applyInto(value, path+"/"+name, sub); err != nil {
+		if err := m.applyMember(vw, field, name, path+"/"+name, entry{target: target, key: key}); err != nil {
 			return err
 		}
-
-		target.SetMapIndex(key, value)
 	}
 
 	for _, key := range target.MapKeys() {
@@ -460,53 +483,15 @@ func (m Mapper) applySlice(target reflect.Value, path string, vw view) error {
 		}
 	}
 
-	elem := reflect.StructField{Type: target.Type().Elem()}
+	// An element has no struct field of its own either, so the rule is
+	// asked about a synthesised one carrying the index as its name.
+	field := reflect.StructField{Type: target.Type().Elem()}
 
 	for i := range n {
 		name := strconv.Itoa(i)
-		elem.Name = name
+		field.Name = name
 
-		item := target.Index(i)
-
-		if m.isLeaf(elem) {
-			data, st, err := vw.leaf(name)
-			if err != nil {
-				return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
-			}
-
-			switch st {
-			case unchanged:
-				continue
-			case missing:
-				item.SetZero()
-
-				continue
-			}
-
-			item.SetZero()
-
-			if err := m.decode(data, item); err != nil {
-				return fmt.Errorf("structtree: decode %s/%s: %w", path, name, err)
-			}
-
-			continue
-		}
-
-		sub, st, err := vw.subtree(name)
-		if err != nil {
-			return fmt.Errorf("structtree: %s/%s: %w", path, name, err)
-		}
-
-		switch st {
-		case unchanged:
-			continue
-		case missing:
-			item.SetZero()
-
-			continue
-		}
-
-		if err := m.applyInto(item, path+"/"+name, sub); err != nil {
+		if err := m.applyMember(vw, field, name, path+"/"+name, inPlace{target.Index(i)}); err != nil {
 			return err
 		}
 	}

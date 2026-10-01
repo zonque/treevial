@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/durationpb"
+
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/zonque/treevial/objects"
@@ -237,5 +239,63 @@ func TestApplySinceRejectsDestinationsItCannotWriteTo(t *testing.T) {
 	n := 3
 	if err := structtree.ApplySince(&n, h.graph, plumbing.ZeroHash, h.roots[0]); err == nil {
 		t.Error("ApplySince accepted a pointer to a non-struct")
+	}
+}
+
+// TestApplySinceSkipsAnUnchangedMapEntry is the saving the baseline buys,
+// asked of a map's values rather than of a struct's fields: an entry whose blob
+// has not moved is left holding what it holds, and is not decoded again.
+func TestApplySinceSkipsAnUnchangedMapEntry(t *testing.T) {
+	before := &withMaps{Limits: map[string]int{"gain": 6, "delay": 12}}
+	after := &withMaps{Limits: map[string]int{"gain": 6, "delay": 99}}
+
+	decoded := 0
+
+	m := counting(&decoded)
+	h := newHistoryWith(t, m, before, after)
+
+	got := &withMaps{Limits: map[string]int{"gain": 6, "delay": 12}}
+
+	if err := m.ApplySince(got, h.graph, h.roots[0], h.roots[1]); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	if want := map[string]int{"gain": 6, "delay": 99}; !reflect.DeepEqual(got.Limits, want) {
+		t.Errorf("Limits: got %v, want %v", got.Limits, want)
+	}
+
+	// Only delay moved; gain sits at a blob whose hash did not change.
+	if decoded != 1 {
+		t.Errorf("decoded %d entries, want 1", decoded)
+	}
+}
+
+// TestApplySinceSkipsAnUnchangedSliceElement is the same question of a slice's
+// elements. Delays holds protobuf messages, which are leaves with a blob
+// apiece, so the elements are asked about one at a time rather than as one run
+// of scalars.
+func TestApplySinceSkipsAnUnchangedSliceElement(t *testing.T) {
+	before := &withSlices{Delays: []*durationpb.Duration{durationpb.New(1), durationpb.New(2)}}
+	after := &withSlices{Delays: []*durationpb.Duration{durationpb.New(1), durationpb.New(3)}}
+
+	decoded := 0
+
+	m := counting(&decoded)
+	h := newHistoryWith(t, m, before, after)
+
+	got := &withSlices{Delays: []*durationpb.Duration{durationpb.New(1), durationpb.New(2)}}
+
+	if err := m.ApplySince(got, h.graph, h.roots[0], h.roots[1]); err != nil {
+		t.Fatalf("ApplySince: %v", err)
+	}
+
+	if len(got.Delays) != 2 || got.Delays[0].AsDuration() != 1 || got.Delays[1].AsDuration() != 3 {
+		t.Errorf("Delays: got %v, want [1ns 3ns]", got.Delays)
+	}
+
+	// Only the second element moved; the first sits at a blob whose hash
+	// did not change.
+	if decoded != 1 {
+		t.Errorf("decoded %d elements, want 1", decoded)
 	}
 }
