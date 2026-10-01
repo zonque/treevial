@@ -148,3 +148,32 @@ func TestAMessageInsideATaggedStructIsRefusedWithAOneof(t *testing.T) {
 		t.Error("Build accepted a tagged struct holding a message with a oneof")
 	}
 }
+
+// TestAMessageInAnInterfaceIsRefusedInsideAMapToo is the same refusal reached
+// by a different route. An interface says nothing about what it holds, so a
+// message in one is written as a message and then met, on the way back, by a
+// field that gives the decoder no message to unmarshal into. A map's values are
+// leaves by the same rule its sibling fields are, so they are owed the same
+// answer rather than a blob nobody can read.
+func TestAMessageInAnInterfaceIsRefusedInsideAMapToo(t *testing.T) {
+	type config struct {
+		Field any
+		Keyed map[string]any
+	}
+
+	t.Run("field", func(t *testing.T) {
+		v := &config{Field: setting("x")}
+
+		if _, err := structtree.Build(objects.NewStore(), v); err == nil {
+			t.Error("Build accepted a message in an interface field")
+		}
+	})
+
+	t.Run("map value", func(t *testing.T) {
+		v := &config{Keyed: map[string]any{"k": setting("x")}}
+
+		if _, err := structtree.Build(objects.NewStore(), v); err == nil {
+			t.Error("Build accepted a message in an interface map value")
+		}
+	})
+}

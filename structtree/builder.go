@@ -526,6 +526,10 @@ func (b *Builder) descend(path string) (reflect.Value, bool) {
 
 // indexValue records where everything beneath v lives, so a later declaration
 // can be resolved by lookup.
+//
+// It walks what [Mapper.eachMember] says a value holds, which is the same
+// enumeration the build itself walks: an index that disagreed with the tree
+// about what is where would resolve a pointer to the wrong path.
 func (b *Builder) indexValue(v reflect.Value, path string) {
 	b.record(v, path, reflect.StructField{Type: v.Type()})
 
@@ -536,87 +540,24 @@ func (b *Builder) indexValue(v reflect.Value, path string) {
 		v = v.Elem()
 	}
 
-	switch v.Kind() {
-	case reflect.Struct:
-		t := v.Type()
+	// Whatever cannot be mapped is left out of the index rather than
+	// reported: a declaration naming it is refused when it is resolved,
+	// and the build itself has already reported why.
+	var ignored error
 
-		for i := range t.NumField() {
-			field := t.Field(i)
-			if !field.IsExported() {
-				continue
-			}
+	b.mapper.eachMember(v, path, &ignored, func(mem member) bool {
+		childPath := join(path, mem.name)
 
-			childPath := field.Name
-			if path != "" {
-				childPath = path + "/" + field.Name
-			}
+		b.fields[childPath] = mem.field
 
-			b.fields[childPath] = field
-
-			value := v.Field(i)
-
-			if b.mapper.isLeaf(field) {
-				b.record(value, childPath, field)
-
-				continue
-			}
-
-			b.indexValue(value, childPath)
+		if b.mapper.isLeaf(mem.field) {
+			b.record(mem.value, childPath, mem.field)
+		} else {
+			b.indexValue(mem.value, childPath)
 		}
 
-	case reflect.Map:
-		if v.Type().Key().Kind() != reflect.String {
-			return
-		}
-
-		elem := reflect.StructField{Type: v.Type().Elem()}
-
-		for _, key := range v.MapKeys() {
-			name := key.String()
-			if validKey(name) != nil {
-				continue
-			}
-
-			childPath := path + "/" + name
-			elem.Name = name
-
-			b.fields[childPath] = elem
-
-			value := v.MapIndex(key)
-
-			if b.mapper.isLeaf(elem) {
-				b.record(value, childPath, elem)
-
-				continue
-			}
-
-			b.indexValue(value, childPath)
-		}
-
-	case reflect.Slice, reflect.Array:
-		elem := reflect.StructField{Type: v.Type().Elem()}
-
-		for i := range v.Len() {
-			name := strconv.Itoa(i)
-
-			childPath := path + "/" + name
-			elem.Name = name
-
-			b.fields[childPath] = elem
-
-			// Unlike a map entry, a slice element has an address of
-			// its own, so it can be declared directly.
-			value := v.Index(i)
-
-			if b.mapper.isLeaf(elem) {
-				b.record(value, childPath, elem)
-
-				continue
-			}
-
-			b.indexValue(value, childPath)
-		}
-	}
+		return true
+	})
 }
 
 // record notes the addresses by which a value may be declared: its own, and

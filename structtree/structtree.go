@@ -145,196 +145,199 @@ func (m Mapper) walk(v reflect.Value, prefix string, yield func(Leaf) bool, fail
 		return true
 	}
 
-	if v.Kind() == reflect.Map {
-		return m.walkMap(v, prefix, yield, failure)
-	}
-
-	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
-		return m.walkSlice(v, prefix, yield, failure)
-	}
-
-	if v.Kind() != reflect.Struct {
+	// Nothing to descend into, so the value itself is the leaf. Only the
+	// root can reach this with an empty prefix, and a root with no members
+	// is refused before the walk starts.
+	if !hasMembers(v) {
 		return yield(Leaf{Path: prefix, Value: v})
 	}
 
-	t := v.Type()
+	return m.eachMember(v, prefix, failure, func(mem member) bool {
+		path := join(prefix, mem.name)
 
-	for i := range t.NumField() {
-		field := t.Field(i)
-		if !field.IsExported() {
-			continue
+		if !m.isLeaf(mem.field) {
+			return m.walk(mem.value, path, yield, failure)
 		}
 
-		path := field.Name
-		if prefix != "" {
-			path = prefix + "/" + field.Name
+		inner, err := m.leafValue(mem)
+		if err != nil {
+			if *failure == nil {
+				*failure = fmt.Errorf("structtree: %s: %w", path, err)
+			}
+
+			return true
 		}
 
-		value := v.Field(i)
+		// Nothing to store: a nil pointer, which reads as a deletion.
+		if !inner.IsValid() {
+			return true
+		}
 
-		if m.isLeaf(field) {
-			inner, err := m.leafValue(field, value)
-			if err != nil {
-				if *failure == nil {
-					*failure = fmt.Errorf("structtree: %s: %w", path, err)
-				}
+		return yield(Leaf{Path: path, Value: inner})
+	})
+}
 
+// member is one thing a value holds: the name it is addressed by, the field the
+// leaf rule is asked about, and the value itself.
+type member struct {
+	name  string
+	field reflect.StructField
+	value reflect.Value
+	// declared says this is a struct field written out in a type, so a tag
+	// could have been put on it. A map's values and a slice's elements are
+	// not: the rule is asked about a synthesised field, and advice to tag
+	// something has nowhere to go.
+	declared bool
+}
+
+// hasMembers reports whether v is a value this package descends into rather
+// than stores whole. It is the structural half of the leaf rule, asked of a
+// value rather than of a field.
+func hasMembers(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Struct, reflect.Map, reflect.Slice, reflect.Array:
+		return true
+	default:
+		return false
+	}
+}
+
+// eachMember calls yield for everything v holds, in the order a tree should
+// carry it: a struct's exported fields as they are declared, a map's entries by
+// sorted key, a slice's or array's elements by index. It reports whether
+// iteration should carry on.
+//
+// A map keyed by anything but a string has no path elements to offer and yields
+// nothing; a key that cannot stand as one path element is skipped. Either way
+// the reason is recorded in failure, which Build reports.
+//
+// Having one enumeration is what keeps the walk, the index a [Builder] records
+// and the leaf rule itself from disagreeing about what a value holds. They were
+// three copies of this, each with its own struct, map and slice arm.
+func (m Mapper) eachMember(v reflect.Value, prefix string, failure *error, yield func(member) bool) bool {
+	note := func(err error) {
+		if *failure == nil {
+			*failure = err
+		}
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		t := v.Type()
+
+		for i := range t.NumField() {
+			field := t.Field(i)
+
+			// Skipped because they cannot be read.
+			if !field.IsExported() {
 				continue
 			}
 
-			if !inner.IsValid() {
-				continue
-			}
-
-			if !yield(Leaf{Path: path, Value: inner}) {
+			if !yield(member{
+				name:     field.Name,
+				field:    field,
+				value:    v.Field(i),
+				declared: true,
+			}) {
 				return false
 			}
-
-			continue
 		}
 
-		if !m.walk(value, path, yield, failure) {
-			return false
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			note(fmt.Errorf("structtree: %s at %q cannot be addressed by path: its keys are %s, not strings",
+				v.Type(), prefix, v.Type().Key()))
+
+			return true
+		}
+
+		// Sorted, so a walk does not depend on Go's map order.
+		keys := make([]string, 0, v.Len())
+		for _, key := range v.MapKeys() {
+			keys = append(keys, key.String())
+		}
+		slices.Sort(keys)
+
+		field := reflect.StructField{Type: v.Type().Elem()}
+
+		for _, key := range keys {
+			if err := validKey(key); err != nil {
+				note(fmt.Errorf("structtree: %s at %q: %w", v.Type(), prefix, err))
+
+				continue
+			}
+
+			field.Name = key
+
+			if !yield(member{
+				name:  key,
+				field: field,
+				value: v.MapIndex(reflect.ValueOf(key).Convert(v.Type().Key())),
+			}) {
+				return false
+			}
+		}
+
+	case reflect.Slice, reflect.Array:
+		field := reflect.StructField{Type: v.Type().Elem()}
+
+		for i := range v.Len() {
+			name := strconv.Itoa(i)
+			field.Name = name
+
+			if !yield(member{name: name, field: field, value: v.Index(i)}) {
+				return false
+			}
 		}
 	}
 
 	return true
 }
 
-// leafValue resolves a leaf field to the value its blob is written from,
-// refusing a field that cannot be stored usefully: a map no path can address,
-// or a value the default encoding would write and then be unable to read back
-// again. The three rules are distinct — addressability, interface erasure, and
-// what the encoder can carry — and none subsumes another; gathering them here
-// is only so that a caller has one failure to report rather than three.
+// join puts a member's name under a prefix, which is empty at the root.
+func join(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+
+	return prefix + "/" + name
+}
+
+// leafValue resolves a leaf to the value its blob is written from, refusing one
+// that cannot be stored usefully: a map no path can address, or a value the
+// default encoding would write and then be unable to read back again. The three
+// rules are distinct — addressability, interface erasure, and what the encoder
+// can carry — and none subsumes another; gathering them here is only so that a
+// caller has one failure to report rather than three.
 //
 // An invalid value with a nil error means there is nothing to store at all: a
 // nil pointer, which reads as a deletion rather than as a failure.
-func (m Mapper) leafValue(field reflect.StructField, value reflect.Value) (reflect.Value, error) {
-	// Asked before the dereference, so it still fires for a nil map.
-	if err := m.unusableMap(field); err != nil {
-		return reflect.Value{}, err
+func (m Mapper) leafValue(mem member) (reflect.Value, error) {
+	// Asked before the dereference, so it still fires for a nil map, and
+	// only of a field that could have carried the tag it recommends.
+	if mem.declared {
+		if err := m.unusableMap(mem.field); err != nil {
+			return reflect.Value{}, err
+		}
 	}
 
-	inner, ok := deref(value)
+	inner, ok := deref(mem.value)
 	if !ok {
 		return reflect.Value{}, nil
 	}
 
-	if err := unreadableLeaf(field, inner); err != nil {
+	// Readability is owed to every leaf, however it is addressed: a blob
+	// nobody can read back is no better under a map key than under a field
+	// name.
+	if err := unreadableLeaf(mem.field, inner); err != nil {
 		return reflect.Value{}, err
 	}
 
-	if err := m.unreadableBlob(field, inner.Type()); err != nil {
+	if err := m.unreadableBlob(mem.field, inner.Type()); err != nil {
 		return reflect.Value{}, err
 	}
 
 	return inner, nil
-}
-
-// walkMap yields the leaves of a map, one subtree per key. Keys are sorted, so
-// a walk does not depend on Go's map order.
-//
-// A map value has no struct field of its own, so the leaf rule is asked about a
-// synthesised one carrying the key as its name and the map's element type. A
-// rule of your own therefore still decides for map values, though a tag cannot:
-// there is nowhere to write one.
-func (m Mapper) walkMap(v reflect.Value, prefix string, yield func(Leaf) bool, failure *error) bool {
-	if v.Type().Key().Kind() != reflect.String {
-		if *failure == nil {
-			*failure = fmt.Errorf("structtree: %s at %q cannot be addressed by path: its keys are %s, not strings",
-				v.Type(), prefix, v.Type().Key())
-		}
-
-		return true
-	}
-
-	keys := make([]string, 0, v.Len())
-	for _, key := range v.MapKeys() {
-		keys = append(keys, key.String())
-	}
-	slices.Sort(keys)
-
-	elem := reflect.StructField{Type: v.Type().Elem()}
-
-	for _, key := range keys {
-		if err := validKey(key); err != nil {
-			if *failure == nil {
-				*failure = fmt.Errorf("structtree: %s at %q: %w", v.Type(), prefix, err)
-			}
-
-			continue
-		}
-
-		value := v.MapIndex(reflect.ValueOf(key).Convert(v.Type().Key()))
-
-		path := key
-		if prefix != "" {
-			path = prefix + "/" + key
-		}
-
-		elem.Name = key
-
-		if m.isLeaf(elem) {
-			inner, ok := deref(value)
-			if !ok {
-				continue
-			}
-
-			if !yield(Leaf{Path: path, Value: inner}) {
-				return false
-			}
-
-			continue
-		}
-
-		if !m.walk(value, path, yield, failure) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// walkSlice yields the leaves of a slice or array, one subtree per element,
-// named by its index.
-//
-// An element has no struct field of its own, so the leaf rule is asked about a
-// synthesised one carrying the index as its name and the element type, the same
-// way a map's values are handled.
-func (m Mapper) walkSlice(v reflect.Value, prefix string, yield func(Leaf) bool, failure *error) bool {
-	elem := reflect.StructField{Type: v.Type().Elem()}
-
-	for i := range v.Len() {
-		name := strconv.Itoa(i)
-
-		path := name
-		if prefix != "" {
-			path = prefix + "/" + name
-		}
-
-		value := v.Index(i)
-		elem.Name = name
-
-		if m.isLeaf(elem) {
-			inner, ok := deref(value)
-			if !ok {
-				continue
-			}
-
-			if !yield(Leaf{Path: path, Value: inner}) {
-				return false
-			}
-
-			continue
-		}
-
-		if !m.walk(value, path, yield, failure) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // validKey reports whether a map key can stand as one path element.
