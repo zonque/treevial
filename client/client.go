@@ -386,8 +386,13 @@ func (c *Client) consume(
 		// has been interpreted: the graph is about to be written to in
 		// any case, so nothing is dropped while a caller might still
 		// be reading what it was handed last.
-		if c.sweeping {
-			if err := sweep(graph, heads); err != nil {
+		//
+		// A graph that cannot be resolved is one something else has
+		// taken objects out of, and carrying on would mean growing
+		// without bound, which is the one thing the caller asked not to
+		// happen.
+		if c.sweeping && len(heads) > 0 {
+			if _, err := graph.Retain(heads...); err != nil {
 				return err
 			}
 		}
@@ -441,20 +446,4 @@ func (c *Client) consume(
 			}
 		}
 	}
-}
-
-// sweep drops from the graph everything the states named in heads cannot
-// reach. A graph it cannot resolve is one something else has taken objects
-// out of, and carrying on would mean growing without bound, which is the one
-// thing the caller asked not to happen.
-func sweep(graph *receive.Graph, heads []plumbing.Hash) error {
-	if len(heads) == 0 {
-		return nil
-	}
-
-	if _, err := graph.Retain(heads...); err != nil {
-		return err
-	}
-
-	return nil
 }

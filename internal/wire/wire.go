@@ -422,36 +422,60 @@ func parseTrailers(msg *ServerMessage, fields []string, line string) error {
 // goes out while it is still being encoded. Close ends the update.
 type PackWriter struct {
 	conn *Conn
-	buf  []byte
+	// buf fills to ChunkSize and is then emptied by writing it out, so one
+	// buffer serves the whole pack. It is kept at full capacity and resliced
+	// back to nothing rather than consumed from the front, which would
+	// shrink the capacity left by a chunk at a time and reallocate.
+	buf []byte
 }
 
 // PackWriter returns a writer for the pack belonging to the update just
 // announced.
 func (c *Conn) PackWriter() *PackWriter {
-	return &PackWriter{conn: c}
+	return &PackWriter{conn: c, buf: make([]byte, 0, ChunkSize)}
 }
 
 // Write implements io.Writer.
 func (w *PackWriter) Write(p []byte) (int, error) {
-	w.buf = append(w.buf, p...)
+	took := len(p)
 
-	for len(w.buf) >= ChunkSize {
-		if err := w.conn.enc.Encode(w.buf[:ChunkSize]); err != nil {
-			return 0, err
+	for len(p) > 0 {
+		n := min(ChunkSize-len(w.buf), len(p))
+
+		w.buf = append(w.buf, p[:n]...)
+		p = p[n:]
+
+		if len(w.buf) < ChunkSize {
+			break
 		}
-		w.buf = w.buf[ChunkSize:]
+
+		if err := w.flush(); err != nil {
+			return took - len(p), err
+		}
 	}
 
-	return len(p), nil
+	return took, nil
+}
+
+// flush writes what is buffered as one pkt-line and empties the buffer.
+func (w *PackWriter) flush() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+
+	if err := w.conn.enc.Encode(w.buf); err != nil {
+		return err
+	}
+
+	w.buf = w.buf[:0]
+
+	return nil
 }
 
 // Close sends whatever is buffered and then the flush-pkt that ends the update.
 func (w *PackWriter) Close() error {
-	if len(w.buf) > 0 {
-		if err := w.conn.enc.Encode(w.buf); err != nil {
-			return err
-		}
-		w.buf = nil
+	if err := w.flush(); err != nil {
+		return err
 	}
 
 	return w.conn.enc.Flush()

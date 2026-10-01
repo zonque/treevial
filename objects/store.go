@@ -185,8 +185,7 @@ func (s *Store) AddBlob(content []byte) (plumbing.Hash, error) {
 // though their names ended in a slash — so callers may pass them in whatever
 // order suits them.
 func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
-	sorted := make([]object.TreeEntry, len(entries))
-	copy(sorted, entries)
+	sorted := slices.Clone(entries)
 	sort.Sort(object.TreeEntrySorter(sorted))
 
 	tree := &object.Tree{Entries: sorted}

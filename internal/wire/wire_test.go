@@ -490,3 +490,27 @@ func TestMalformedServerAndUpdateLinesAreRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestPackWriterReportsEverythingItTook is the io.Writer contract: a writer
+// that takes the whole slice has to say so, or anything writing through it —
+// io.Copy, the pack encoder — reads a short count as a failure.
+func TestPackWriterReportsEverythingItTook(t *testing.T) {
+	for _, size := range []int{1, wire.ChunkSize - 1, wire.ChunkSize, wire.ChunkSize + 1, 3*wire.ChunkSize + 7} {
+		client, server := net.Pipe()
+		defer client.Close()
+		defer server.Close()
+
+		// Drained while the write happens, since a pipe blocks.
+		go io.Copy(io.Discard, client)
+
+		w := wire.NewConn(server).PackWriter()
+
+		n, err := w.Write(make([]byte, size))
+		if err != nil {
+			t.Fatalf("size %d: Write: %v", size, err)
+		}
+		if n != size {
+			t.Errorf("size %d: Write returned %d", size, n)
+		}
+	}
+}
