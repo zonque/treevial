@@ -21,11 +21,11 @@ import (
 
 // Handler receives the objects of a packfile in stream order.
 //
-// go-git's packfile.Parser has an Observer interface with a similar shape, but
-// it always passes nil object content (parser.go calls
-// onInflatedObjectContent with a nil buffer) and it needs a storer to resolve
-// deltas. Scan therefore drives packfile.Scanner directly, which yields the
-// inflated bytes and requires no storage at all.
+// [github.com/zonque/treevial/receive.Handler] is this interface under an
+// exported name, and carries the documentation: it is what a caller of the
+// library implements, while this is what Scan takes, so that objects can use
+// Scan without depending on the client side. Go matches them structurally, and
+// receive.Interpret passing one to Scan is what keeps them the same shape.
 type Handler interface {
 	// OnPackHeader reports how many objects the pack declares.
 	OnPackHeader(count uint32) error

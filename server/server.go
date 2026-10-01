@@ -470,11 +470,6 @@ func (c *subscriber) wake() {
 	}
 }
 
-// keepalivePeriod is how often the operating system probes an idle connection.
-// Probes keep NATs and middleboxes from forgetting a connection that may sit
-// quiet for hours; they do not close a healthy one.
-const keepalivePeriod = 30 * time.Second
-
 // Server publishes a set of refs and pushes the objects behind them to
 // everyone following.
 type Server struct {
@@ -681,7 +676,7 @@ func (s *Server) Serve(lis net.Listener) error {
 func (s *Server) tune(conn *net.TCPConn) {
 	if s.deadPeer == 0 {
 		_ = conn.SetKeepAlive(true)
-		_ = conn.SetKeepAlivePeriod(keepalivePeriod)
+		_ = conn.SetKeepAlivePeriod(tcpkeep.DefaultPeriod)
 
 		return
 	}

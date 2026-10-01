@@ -105,3 +105,49 @@ func Example(label string) *Config {
 func BuildTree(store *objects.Store, label string) (plumbing.Hash, error) {
 	return structtree.Build(store, Example(label))
 }
+
+// Ref is everything a provider holds for one ref: the value being
+// synchronised, the store its objects live in, and the builder that keeps the
+// two in step without redoing work.
+//
+// Both the example server and the end-to-end tests serve refs this way, so it
+// lives here rather than being written out twice — which is also what makes the
+// tests exercise the path the example takes rather than a copy of it.
+type Ref struct {
+	Config  *Config
+	Store   *objects.Store
+	Builder *structtree.Builder
+}
+
+// NewRef builds the example configuration for label into a store of its own and
+// returns it with the root tree hash. Because nothing is shared between refs,
+// releasing one is nothing more than dropping the reference.
+func NewRef(label string) (*Ref, plumbing.Hash, error) {
+	ref := &Ref{Config: Example(label), Store: objects.NewStore()}
+
+	builder, err := structtree.NewBuilder(ref.Store, ref.Config)
+	if err != nil {
+		return nil, plumbing.ZeroHash, err
+	}
+	ref.Builder = builder
+
+	// The first build has everything to do.
+	root, err := builder.Build()
+	if err != nil {
+		return nil, plumbing.ZeroHash, err
+	}
+
+	return ref, root, nil
+}
+
+// Retune changes one deeply nested field and rebuilds the tree.
+//
+// The field it touched is the field it declares, so the builder encodes and
+// hashes that leaf alone and reuses the hashes it already holds for the rest.
+// Only the blob for that field and the trees above it are new, so the push that
+// follows is tiny — and so is the work behind it.
+func (r *Ref) Retune(mtu int) (plumbing.Hash, error) {
+	r.Config.Network.Primary.MTU = mtu
+
+	return r.Builder.Build(&r.Config.Network.Primary.MTU)
+}

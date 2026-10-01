@@ -9,17 +9,7 @@ import (
 	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/server"
-	"github.com/zonque/treevial/structtree"
 )
-
-// refData is everything the server holds for one ref: the Go value being
-// synchronised, the store its objects live in, and the builder that keeps the
-// two in step without redoing work.
-type refData struct {
-	config  *shared.Config
-	store   *objects.Store
-	builder *structtree.Builder
-}
 
 // demoProvider gives each ref a configuration struct of its own, in a store of
 // its own, and throws both away when its subscriber disconnects. Because
@@ -27,11 +17,11 @@ type refData struct {
 // the reference.
 type demoProvider struct {
 	mu   sync.Mutex
-	held map[string]*refData
+	held map[string]*shared.Ref
 }
 
 func newDemoProvider() *demoProvider {
-	return &demoProvider{held: map[string]*refData{}}
+	return &demoProvider{held: map[string]*shared.Ref{}}
 }
 
 // name reads a label out of a ref. The server takes the ref verbatim; what to
@@ -48,16 +38,7 @@ func name(ref string) string {
 
 // Prepare implements server.Provider.
 func (p *demoProvider) Prepare(ref string) (*objects.Store, server.Head, error) {
-	data := &refData{config: shared.Example(name(ref)), store: objects.NewStore()}
-
-	builder, err := structtree.NewBuilder(data.store, data.config)
-	if err != nil {
-		return nil, server.Head{}, err
-	}
-	data.builder = builder
-
-	// The first build has everything to do.
-	root, err := builder.Build()
+	data, root, err := shared.NewRef(name(ref))
 	if err != nil {
 		return nil, server.Head{}, err
 	}
@@ -70,7 +51,7 @@ func (p *demoProvider) Prepare(ref string) (*objects.Store, server.Head, error) 
 	log.Printf("[%s] prepared -> %s, %d leaves walked from the struct (%d refs held)",
 		ref, root, shared.LeafCount, held)
 
-	return data.store, server.Head{Hash: root}, nil
+	return data.Store, server.Head{Hash: root}, nil
 }
 
 // Release implements server.Provider.
@@ -88,13 +69,8 @@ func (p *demoProvider) Release(ref string) {
 	log.Printf("[%s] subscriber gone; released its config and objects (%d refs held)", ref, held)
 }
 
-// Retune changes one deeply nested field of a ref's configuration and rebuilds
-// the tree.
-//
-// The field it touched is the field it declares, so the builder encodes and
-// hashes that leaf alone and reuses the hashes it already holds for the rest.
-// Only the blob for that field and the trees above it are new, so the push that
-// follows is tiny — and so is the work behind it.
+// Retune moves a ref's configuration on by one field. See
+// [shared.Ref.Retune] for why that costs so little.
 func (p *demoProvider) Retune(ref string) (server.Head, error) {
 	p.mu.Lock()
 	data, ok := p.held[ref]
@@ -104,9 +80,7 @@ func (p *demoProvider) Retune(ref string) (server.Head, error) {
 		return server.Head{}, fmt.Errorf("%q is gone", ref)
 	}
 
-	data.config.Network.Primary.MTU = 9000
-
-	root, err := data.builder.Build(&data.config.Network.Primary.MTU)
+	root, err := data.Retune(9000)
 	if err != nil {
 		return server.Head{}, err
 	}

@@ -25,7 +25,7 @@ func TestRetuneMatchesAFullRebuild(t *testing.T) {
 	}
 
 	// The same configuration, built from scratch in a store of its own.
-	want, err := structtree.Build(objects.NewStore(), p.held[testRef].config)
+	want, err := structtree.Build(objects.NewStore(), p.held[testRef].Config)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

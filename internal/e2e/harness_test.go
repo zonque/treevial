@@ -18,24 +18,14 @@ import (
 	"github.com/zonque/treevial/demo/shared"
 	"github.com/zonque/treevial/objects"
 	"github.com/zonque/treevial/server"
-	"github.com/zonque/treevial/structtree"
 )
-
-// refData is what the provider holds for one ref, the same way the example
-// server does: the value being synchronised, its store, and the builder that
-// keeps the two in step without redoing work.
-type refData struct {
-	config  *shared.Config
-	store   *objects.Store
-	builder *structtree.Builder
-}
 
 // testProvider prepares a configuration per ref, labelled with the ref itself
 // so a test can tell one subscriber's data from another's, and records the
 // lifecycle calls the server makes.
 type testProvider struct {
 	mu       sync.Mutex
-	held     map[string]*refData
+	held     map[string]*shared.Ref
 	prepared []string
 	released []string
 	// calls records when a preparation started and when a release
@@ -59,7 +49,7 @@ type testProvider struct {
 }
 
 func newTestProvider() *testProvider {
-	return &testProvider{held: map[string]*refData{}}
+	return &testProvider{held: map[string]*shared.Ref{}}
 }
 
 func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) {
@@ -77,15 +67,7 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) 
 		<-p.prepareGate
 	}
 
-	data := &refData{config: shared.Example(ref), store: objects.NewStore()}
-
-	builder, err := structtree.NewBuilder(data.store, data.config)
-	if err != nil {
-		return nil, server.Head{}, err
-	}
-	data.builder = builder
-
-	root, err := builder.Build()
+	data, root, err := shared.NewRef(ref)
 	if err != nil {
 		return nil, server.Head{}, err
 	}
@@ -101,7 +83,7 @@ func (p *testProvider) Prepare(ref string) (*objects.Store, server.Head, error) 
 		head.Sequence = 1
 	}
 
-	return data.store, head, nil
+	return data.Store, head, nil
 }
 
 func (p *testProvider) Release(ref string) {
@@ -130,9 +112,9 @@ func (p *testProvider) lifecycle() []string {
 	return append([]string(nil), p.calls...)
 }
 
-// retune changes one deeply nested field and rebuilds, declaring the field it
-// touched so only that leaf is encoded again — the path the example server
-// takes, exercised here end to end.
+// retune moves a ref on by one field, through the same helper the example
+// server uses — so only that leaf is encoded again, and the path the example
+// takes is the path exercised here end to end.
 func (p *testProvider) retune(t *testing.T, ref string, mtu int) server.Head {
 	t.Helper()
 
@@ -144,9 +126,7 @@ func (p *testProvider) retune(t *testing.T, ref string, mtu int) server.Head {
 		t.Fatalf("no data prepared for %q", ref)
 	}
 
-	data.config.Network.Primary.MTU = mtu
-
-	root, err := data.builder.Build(&data.config.Network.Primary.MTU)
+	root, err := data.Retune(mtu)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/zonque/treevial/internal/tcpkeep"
 )
 
 // Without the option a connection must keep the plain 30-second keepalive it
@@ -57,7 +59,7 @@ func TestADialWithNoOptionKeepsTheOldKeepalive(t *testing.T) {
 		t.Fatalf("GetsockoptInt: %v", readErr)
 	}
 
-	if want := int(keepalivePeriod.Seconds()); idle != want {
+	if want := int(tcpkeep.DefaultPeriod.Seconds()); idle != want {
 		t.Errorf("TCP_KEEPIDLE = %d s, want the unchanged %d", idle, want)
 	}
 }

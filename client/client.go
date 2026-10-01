@@ -43,11 +43,6 @@ import (
 	"github.com/zonque/treevial/receive"
 )
 
-// keepalivePeriod is how often the operating system probes an idle connection.
-// Probes keep NATs and middleboxes from forgetting a connection that may sit
-// quiet for hours; they do not close a healthy one.
-const keepalivePeriod = 30 * time.Second
-
 // Update reports one completed push: the ref that moved, the object it now
 // points at, what it pointed at before, how many objects the server had to
 // send, what the push cost on the wire, and the accumulated graph the client
@@ -218,7 +213,7 @@ func Dial(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	}
 
 	// Unset, this is the plain keepalive the connection has always had.
-	dialer := net.Dialer{KeepAlive: keepalivePeriod}
+	dialer := net.Dialer{KeepAlive: tcpkeep.DefaultPeriod}
 
 	if c.deadPeer != 0 {
 		live := tcpkeep.For(c.deadPeer)

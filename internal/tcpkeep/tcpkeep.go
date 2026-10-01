@@ -18,6 +18,14 @@ import (
 // so four is what divides the second half into useful pieces.
 const probes = 4
 
+// DefaultPeriod is how often the operating system probes an idle connection
+// when no budget has been set.
+//
+// Probes keep NATs and middleboxes from forgetting a connection that may sit
+// quiet for hours; they do not close a healthy one. Both halves of treevial use
+// it for exactly that, which is why it sits beside the settings that replace it.
+const DefaultPeriod = 30 * time.Second
+
 // MinTimeout is the smallest budget that can be expressed.
 //
 // The kernel keeps the keepalive schedule in whole seconds, and the probe
