@@ -3,6 +3,7 @@ package structtree
 import (
 	"fmt"
 	"reflect"
+	"sync"
 )
 
 // TagKey is the struct tag treevial reads, and TagLeaf the value that marks a
@@ -165,12 +166,31 @@ func (m Mapper) unreadableBlob(field reflect.StructField, t reflect.Type) error 
 		return nil
 	}
 
-	if !containsMessage(t, map[reflect.Type]bool{}) {
+	if !holdsMessage(t) {
 		return nil
 	}
 
 	return fmt.Errorf("%s holds a protobuf message, which cannot be stored whole by the default encoding: leave it untagged so each message gets a blob of its own, or give the Mapper an Encode and Decode that handle it",
 		field.Type)
+}
+
+// holdsMessage is containsMessage remembered per type.
+//
+// The answer depends on nothing but the type, and the question is asked once
+// per leaf: a value of thirty thousand leaves asked it thirty thousand times,
+// allocating a set and walking the type's fields for each. Types are permanent,
+// so the answers can be too.
+var holdsMessageByType sync.Map // reflect.Type -> bool
+
+func holdsMessage(t reflect.Type) bool {
+	if answer, ok := holdsMessageByType.Load(t); ok {
+		return answer.(bool)
+	}
+
+	answer := containsMessage(t, map[reflect.Type]bool{})
+	holdsMessageByType.Store(t, answer)
+
+	return answer
 }
 
 // containsMessage reports whether t holds a protobuf message anywhere inside.

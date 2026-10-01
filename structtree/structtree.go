@@ -516,6 +516,11 @@ func (m Mapper) Build(store *objects.Store, v any) (plumbing.Hash, error) {
 type node struct {
 	children map[string]*node
 	order    []string
+	// entries is what this node was last stored as, kept so that a
+	// targeted build can rewrite one hash in it rather than collecting
+	// every child again. It is dropped whenever a child comes or goes,
+	// since the entries then no longer describe the node.
+	entries []object.TreeEntry
 	// blob is set on a leaf, tree on a subtree.
 	blob plumbing.Hash
 	tree plumbing.Hash
@@ -561,6 +566,7 @@ func (n *node) put(name string, child *node) {
 
 	n.children[name] = child
 	n.order = append(n.order, name)
+	n.entries = nil
 }
 
 // store writes the node and everything beneath it, returning the tree hash and
@@ -590,12 +596,60 @@ func (n *node) store(s *objects.Store) (plumbing.Hash, error) {
 		entries = append(entries, object.TreeEntry{Name: name, Mode: filemode.Dir, Hash: hash})
 	}
 
+	return n.write(s, entries)
+}
+
+// write stores the node as the entries given and remembers them, so that a
+// later build which moves one child can hand back the same slice with that
+// one hash changed.
+func (n *node) write(s *objects.Store, entries []object.TreeEntry) (plumbing.Hash, error) {
 	hash, err := s.AddTree(entries)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
 
+	n.entries = entries
 	n.tree = hash
 
 	return hash, nil
+}
+
+// moved rewrites the entry for name from the hash its child now holds, and
+// reports whether the entries describe this node well enough to do so. A node
+// whose children have come or gone has to be collected again.
+func (n *node) moved(name string) bool {
+	if n.entries == nil {
+		return false
+	}
+
+	child, ok := n.children[name]
+	if !ok {
+		return false
+	}
+
+	entry := object.TreeEntry{Name: name, Mode: filemode.Dir, Hash: child.tree}
+	if child.blob != plumbing.ZeroHash {
+		entry = object.TreeEntry{Name: name, Mode: filemode.Regular, Hash: child.blob}
+	}
+
+	// Scanned rather than looked up: one pass of string comparisons over
+	// the entries replaces a lookup for every one of them, which is what
+	// collecting them again would cost.
+	for i := range n.entries {
+		if n.entries[i].Name != name {
+			continue
+		}
+
+		if n.entries[i].Mode != entry.Mode {
+			// A child that changed kind changes where it sorts, so
+			// the entries have to be put in order again.
+			return false
+		}
+
+		n.entries[i].Hash = entry.Hash
+
+		return true
+	}
+
+	return false
 }

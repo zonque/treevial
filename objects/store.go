@@ -20,11 +20,11 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -185,8 +185,19 @@ func (s *Store) AddBlob(content []byte) (plumbing.Hash, error) {
 // though their names ended in a slash — so callers may pass them in whatever
 // order suits them.
 func (s *Store) AddTree(entries []object.TreeEntry) (plumbing.Hash, error) {
+	// Cloned because the memo below keeps what it is given, and the caller
+	// may go on using its own slice — a Builder holds one and rewrites an
+	// entry's hash in place.
 	sorted := slices.Clone(entries)
-	sort.Sort(object.TreeEntrySorter(sorted))
+
+	// Almost every tree written here is already in order: a Builder keeps
+	// its entries that way, and a walk yields a struct's fields as declared
+	// and a map's keys sorted. Checking costs one pass of comparisons where
+	// sorting costs many, and go-git's comparison builds a string per
+	// comparison, so the pass that is skipped is the expensive one.
+	if !slices.IsSortedFunc(sorted, compareEntries) {
+		slices.SortFunc(sorted, compareEntries)
+	}
 
 	tree := &object.Tree{Entries: sorted}
 
@@ -453,4 +464,43 @@ func (s *Store) ReplaceBlob(root plumbing.Hash, path string, content []byte) (pl
 	}
 
 	return rebuild(root, parts)
+}
+
+// compareEntries orders two entries the way git does, which is as though a
+// directory's name ended in a slash.
+//
+// It is [object.TreeEntrySorter]'s rule without that name being built: the
+// sorter returns name + "/" for a directory, so sorting a tree of ten thousand
+// subtrees allocates a string for every comparison it makes. The slash is
+// compared where it would have been instead.
+func compareEntries(a, b object.TreeEntry) int {
+	la, lb := sortLen(a), sortLen(b)
+
+	for i := range min(la, lb) {
+		ca, cb := sortByte(a, i), sortByte(b, i)
+		if ca != cb {
+			return int(ca) - int(cb)
+		}
+	}
+
+	return la - lb
+}
+
+// sortLen is the length of the name an entry sorts under.
+func sortLen(e object.TreeEntry) int {
+	if e.Mode == filemode.Dir {
+		return len(e.Name) + 1
+	}
+
+	return len(e.Name)
+}
+
+// sortByte is one byte of the name an entry sorts under. Only a directory is
+// ever asked past the end of its own name, and the byte there is the slash.
+func sortByte(e object.TreeEntry, i int) byte {
+	if i < len(e.Name) {
+		return e.Name[i]
+	}
+
+	return '/'
 }

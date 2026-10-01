@@ -306,11 +306,18 @@ func (b *Builder) refresh(path string) error {
 
 // rehash recomputes the tree objects from path's parent up to the root, which
 // is all that a change at path can have moved.
+//
+// Each node on the way up has exactly one child that moved — the next one down
+// the path — so each is told which, and rewrites that one entry rather than
+// collecting all of them again. On a map of ten thousand entries that is the
+// difference between one string comparison per entry and a map lookup per
+// entry, on top of the tree object itself, which has to be written again
+// whichever way round it is built.
 func (b *Builder) rehash(path string) error {
 	chain, names := b.chain(path)
 
 	for i := len(chain) - 1; i >= 0; i-- {
-		if err := b.restore(chain[i], strings.Join(names[:i], "/")); err != nil {
+		if err := b.restore(chain[i], names[i]); err != nil {
 			return err
 		}
 	}
@@ -318,8 +325,20 @@ func (b *Builder) rehash(path string) error {
 	return nil
 }
 
-// restore stores one node from the hashes its children already hold.
-func (b *Builder) restore(n *node, path string) error {
+// restore stores one node from the hashes its children already hold, where
+// moved is the name of the child that has just been rebuilt.
+func (b *Builder) restore(n *node, moved string) error {
+	if n.moved(moved) {
+		hash, err := b.store.AddTree(n.entries)
+		if err != nil {
+			return err
+		}
+
+		n.tree = hash
+
+		return nil
+	}
+
 	entries := make([]object.TreeEntry, 0, len(n.order))
 
 	for _, name := range n.order {
@@ -333,14 +352,9 @@ func (b *Builder) restore(n *node, path string) error {
 		entries = append(entries, entry)
 	}
 
-	hash, err := b.store.AddTree(entries)
-	if err != nil {
-		return err
-	}
+	_, err := n.write(b.store, entries)
 
-	n.tree = hash
-
-	return nil
+	return err
 }
 
 // chain returns the nodes from the root down to path's parent, and the names
@@ -417,6 +431,7 @@ func (b *Builder) detach(path string) {
 	}
 
 	delete(parent.children, name)
+	parent.entries = nil
 
 	if i := slices.Index(parent.order, name); i >= 0 {
 		parent.order = slices.Delete(parent.order, i, i+1)
