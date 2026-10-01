@@ -126,7 +126,7 @@ func (g *Graph) Retain(roots ...plumbing.Hash) (int, error) {
 			continue
 		}
 
-		if err := g.mark(root, "", live); err != nil {
+		if err := g.mark(root, live); err != nil {
 			return 0, err
 		}
 	}
@@ -152,37 +152,31 @@ func (g *Graph) Retain(roots ...plumbing.Hash) (int, error) {
 
 // mark collects every object reachable from the tree at h, reporting the first
 // one the graph does not hold.
-func (g *Graph) mark(h plumbing.Hash, prefix string, live map[plumbing.Hash]bool) error {
-	if live[h] {
-		return nil
-	}
-
-	entries, err := g.entries(h)
-	if err != nil {
+func (g *Graph) mark(h plumbing.Hash, live map[plumbing.Hash]bool) error {
+	if _, err := g.entries(h); err != nil {
 		return err
 	}
 
 	live[h] = true
 
-	for _, e := range entries {
-		path := prefix + e.Name
-
-		if e.Mode == filemode.Dir {
-			if err := g.mark(e.Hash, path+"/", live); err != nil {
-				return err
-			}
-
-			continue
+	return g.descend(h, "", func(path string, e object.TreeEntry) (bool, error) {
+		// Already marked, along with everything beneath it.
+		if live[e.Hash] {
+			return false, nil
 		}
 
-		if _, err := g.content(e.Hash, path); err != nil {
-			return err
+		if e.Mode != filemode.Dir {
+			// Held as well as named: a tree whose blob is gone is
+			// not one this graph can resolve.
+			if _, err := g.content(e.Hash, path); err != nil {
+				return false, err
+			}
 		}
 
 		live[e.Hash] = true
-	}
 
-	return nil
+		return true, nil
+	})
 }
 
 // Leaves walks the tree at root and returns every blob keyed by its
@@ -190,14 +184,35 @@ func (g *Graph) mark(h plumbing.Hash, prefix string, live map[plumbing.Hash]bool
 func (g *Graph) Leaves(root plumbing.Hash) (map[string][]byte, error) {
 	out := map[string][]byte{}
 
-	if err := g.walk(root, "", out); err != nil {
+	err := g.descend(root, "", func(path string, e object.TreeEntry) (bool, error) {
+		if e.Mode == filemode.Dir {
+			return true, nil
+		}
+
+		content, err := g.content(e.Hash, path)
+		if err != nil {
+			return false, err
+		}
+		out[path] = content
+
+		return false, nil
+	})
+	if err != nil {
 		return nil, err
 	}
 
 	return out, nil
 }
 
-func (g *Graph) walk(h plumbing.Hash, prefix string, out map[string][]byte) error {
+// descend visits every entry beneath the tree at h, parents before children,
+// with the slash-separated path leading to each. visit reports whether to carry
+// on into a directory's own entries; returning false prunes it, which for a
+// tree prunes everything beneath it.
+//
+// Every walk over a graph's hierarchy comes through here — listing one,
+// collecting its blobs, marking what a state still reaches — so they cannot
+// disagree about what reaching an object means.
+func (g *Graph) descend(h plumbing.Hash, prefix string, visit func(string, object.TreeEntry) (bool, error)) error {
 	entries, err := g.entries(h)
 	if err != nil {
 		return err
@@ -206,19 +221,18 @@ func (g *Graph) walk(h plumbing.Hash, prefix string, out map[string][]byte) erro
 	for _, e := range entries {
 		path := prefix + e.Name
 
-		if e.Mode == filemode.Dir {
-			if err := g.walk(e.Hash, path+"/", out); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		content, err := g.content(e.Hash, path)
+		carryOn, err := visit(path, e)
 		if err != nil {
 			return err
 		}
-		out[path] = content
+
+		if !carryOn || e.Mode != filemode.Dir {
+			continue
+		}
+
+		if err := g.descend(e.Hash, path+"/", visit); err != nil {
+			return err
+		}
 	}
 
 	return nil

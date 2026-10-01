@@ -190,3 +190,41 @@ func TestDiffReturnsChangesSortedByPath(t *testing.T) {
 		}
 	}
 }
+
+// TestDiffNamesTheHashOfALeafInsideADeletedSubtree asks for the one thing a
+// change carries that its path and content do not say: which object it was. A
+// deletion has no content, so the hash it had is all there is to name it by,
+// and a leaf reached by expanding a whole subtree is as much an object as one
+// named directly. ListingSince shows a removed object with the hash it had;
+// this is the same answer in the other format.
+func TestDiffNamesTheHashOfALeafInsideADeletedSubtree(t *testing.T) {
+	s := objects.NewStore()
+	g := receive.NewGraph()
+
+	leaf := blobEntry(t, s, "three", "3\n")
+	sub := tree(t, s, leaf)
+	old := tree(t, s, blobEntry(t, s, "keep", "1\n"),
+		object.TreeEntry{Name: "sub", Mode: filemode.Dir, Hash: sub})
+	push(t, s, g, plumbing.ZeroHash, old)
+
+	new := tree(t, s, blobEntry(t, s, "keep", "1\n"))
+	push(t, s, g, plumbing.ZeroHash, new)
+
+	changes, err := g.Diff(old, new)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+
+	if len(changes) != 1 {
+		t.Fatalf("got %d changes, want 1: %v", len(changes), changes)
+	}
+
+	c := changes[0]
+
+	if c.Path != "sub/three" {
+		t.Fatalf("got %q, want %q", c.Path, "sub/three")
+	}
+	if c.Hash != leaf.Hash {
+		t.Errorf("got hash %s, want %s", c.Hash, leaf.Hash)
+	}
+}

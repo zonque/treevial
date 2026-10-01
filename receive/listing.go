@@ -37,31 +37,17 @@ func (g *Graph) Listing(root plumbing.Hash) (string, error) {
 }
 
 func (g *Graph) listing(h plumbing.Hash, prefix string, b *strings.Builder) error {
-	entries, err := g.entries(h)
-	if err != nil {
-		return err
-	}
-
-	for _, e := range entries {
-		path := prefix + e.Name
-
+	return g.descend(h, prefix, func(path string, e object.TreeEntry) (bool, error) {
 		row(b, "", e, path)
 
-		if e.Mode != filemode.Dir {
-			continue
-		}
-
-		if err := g.listing(e.Hash, path+"/", b); err != nil {
-			return err
-		}
-	}
-
-	return nil
+		return true, nil
+	})
 }
 
 // row writes one object the way git ls-tree would, after whatever mark it was
 // given. Both a listing and a changeset come through here, so the two cannot
-// drift apart.
+// drift apart in format, as neither can drift from a diff in what it reports:
+// all three walk through [Graph.descend] or [Graph.compare].
 func row(b *strings.Builder, mark string, e object.TreeEntry, path string) {
 	kind := "blob"
 	if e.Mode == filemode.Dir {
@@ -94,106 +80,14 @@ func row(b *strings.Builder, mark string, e object.TreeEntry, path string) {
 func (g *Graph) ListingSince(old, new plumbing.Hash) (string, error) {
 	var b strings.Builder
 
-	if err := g.listingSince(old, new, "", &b); err != nil {
+	err := g.compare(old, new, "", func(kind ChangeKind, e object.TreeEntry, path string) error {
+		row(&b, kind.Symbol()+" ", e, path)
+
+		return nil
+	})
+	if err != nil {
 		return "", err
 	}
 
 	return b.String(), nil
-}
-
-func (g *Graph) listingSince(old, new plumbing.Hash, prefix string, b *strings.Builder) error {
-	if old == new {
-		return nil
-	}
-
-	was, err := g.entriesByName(old)
-	if err != nil {
-		return err
-	}
-
-	now, err := g.entriesByName(new)
-	if err != nil {
-		return err
-	}
-
-	// The new tree's own order, which is git's, for everything still there.
-	for _, e := range g.ordered(new) {
-		path := prefix + e.Name
-
-		before, existed := was[e.Name]
-
-		switch {
-		case existed && before.Hash == e.Hash && before.Mode == e.Mode:
-			continue
-
-		case existed && (before.Mode == filemode.Dir) != (e.Mode == filemode.Dir):
-			// Nothing about it survived, so it goes and another comes.
-			if err := g.whole(before, path, Deleted, b); err != nil {
-				return err
-			}
-
-			if err := g.whole(e, path, Added, b); err != nil {
-				return err
-			}
-
-		case !existed:
-			if err := g.whole(e, path, Added, b); err != nil {
-				return err
-			}
-
-		default:
-			row(b, Modified.Symbol()+" ", e, path)
-
-			if e.Mode == filemode.Dir {
-				if err := g.listingSince(before.Hash, e.Hash, path+"/", b); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// Then what has gone, in the order the old tree held it.
-	for _, e := range g.ordered(old) {
-		if _, still := now[e.Name]; still {
-			continue
-		}
-
-		if err := g.whole(e, prefix+e.Name, Deleted, b); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// whole marks one entry and, if it is a tree, everything beneath it.
-func (g *Graph) whole(e object.TreeEntry, path string, kind ChangeKind, b *strings.Builder) error {
-	row(b, kind.Symbol()+" ", e, path)
-
-	if e.Mode != filemode.Dir {
-		return nil
-	}
-
-	entries, err := g.entries(e.Hash)
-	if err != nil {
-		return err
-	}
-
-	for _, child := range entries {
-		if err := g.whole(child, path+"/"+child.Name, kind, b); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// ordered returns a tree's entries in the order it holds them, and nothing for
-// the zero hash.
-func (g *Graph) ordered(h plumbing.Hash) []object.TreeEntry {
-	if h.IsZero() {
-		return nil
-	}
-
-	return g.trees[h]
 }

@@ -68,94 +68,26 @@ func (c Change) String() string {
 // sorted by path. Subtrees whose hashes match are skipped whole, which is what
 // makes reporting a small change cheap no matter how large the tree is.
 //
+// Only paths are reported, not the trees above them: a change arrives as one
+// blob moved and every tree on its path rewritten, and it is the blob that is
+// the change. [Graph.ListingSince] is the same comparison with the trees left
+// in.
+//
 // A zero hash stands for an empty tree, so Diff(plumbing.ZeroHash, root) lists
 // every leaf as added.
 func (g *Graph) Diff(old, new plumbing.Hash) ([]Change, error) {
 	var out []Change
 
-	if err := g.diffTrees(old, new, "", &out); err != nil {
-		return nil, err
-	}
-
-	slices.SortFunc(out, func(a, b Change) int { return strings.Compare(a.Path, b.Path) })
-
-	return out, nil
-}
-
-func (g *Graph) diffTrees(old, new plumbing.Hash, prefix string, out *[]Change) error {
-	if old == new {
-		return nil
-	}
-
-	oldEntries, err := g.entriesByName(old)
-	if err != nil {
-		return err
-	}
-
-	newEntries, err := g.entriesByName(new)
-	if err != nil {
-		return err
-	}
-
-	for name, ne := range newEntries {
-		path := prefix + name
-
-		oe, existed := oldEntries[name]
-		if existed && oe.Hash == ne.Hash && oe.Mode == ne.Mode {
-			continue
+	err := g.compare(old, new, "", func(kind ChangeKind, e object.TreeEntry, path string) error {
+		// A tree is the carriage, not the cargo.
+		if e.Mode == filemode.Dir {
+			return nil
 		}
 
-		// A path that swapped between file and directory reads most
-		// clearly as the old thing going away and the new one arriving.
-		if existed && oe.Mode != ne.Mode {
-			if err := g.report(Deleted, oe, path, out); err != nil {
-				return err
-			}
-			existed = false
-		}
-
-		if ne.Mode == filemode.Dir {
-			from := plumbing.ZeroHash
-			if existed {
-				from = oe.Hash
-			}
-
-			if err := g.diffTrees(from, ne.Hash, path+"/", out); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		kind := Added
-		if existed {
-			kind = Modified
-		}
-
-		if err := g.report(kind, ne, path, out); err != nil {
-			return err
-		}
-	}
-
-	for name, oe := range oldEntries {
-		if _, ok := newEntries[name]; ok {
-			continue
-		}
-
-		if err := g.report(Deleted, oe, prefix+name, out); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// report appends a change for e, expanding a directory into one change per leaf
-// beneath it.
-func (g *Graph) report(kind ChangeKind, e object.TreeEntry, path string, out *[]Change) error {
-	if e.Mode != filemode.Dir {
 		change := Change{Kind: kind, Path: path, Hash: e.Hash}
 
+		// A deletion has no new content; the hash it had is what names
+		// it.
 		if kind != Deleted {
 			content, err := g.content(e.Hash, path)
 			if err != nil {
@@ -164,44 +96,15 @@ func (g *Graph) report(kind ChangeKind, e object.TreeEntry, path string, out *[]
 			change.Content = content
 		}
 
-		*out = append(*out, change)
+		out = append(out, change)
 
 		return nil
-	}
-
-	leaves := map[string][]byte{}
-	if err := g.walk(e.Hash, path+"/", leaves); err != nil {
-		return err
-	}
-
-	for leafPath, content := range leaves {
-		change := Change{Kind: kind, Path: leafPath}
-		if kind != Deleted {
-			change.Content = content
-		}
-
-		*out = append(*out, change)
-	}
-
-	return nil
-}
-
-// entriesByName indexes a tree's entries. The zero hash indexes as an empty
-// tree, which is how an added or removed subtree is expanded.
-func (g *Graph) entriesByName(h plumbing.Hash) (map[string]object.TreeEntry, error) {
-	if h.IsZero() {
-		return map[string]object.TreeEntry{}, nil
-	}
-
-	entries, err := g.entries(h)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]object.TreeEntry, len(entries))
-	for _, e := range entries {
-		out[e.Name] = e
-	}
+	slices.SortFunc(out, func(a, b Change) int { return strings.Compare(a.Path, b.Path) })
 
 	return out, nil
 }
