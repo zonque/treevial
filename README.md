@@ -313,13 +313,13 @@ goos: linux
 goarch: amd64
 pkg: github.com/zonque/treevial/structtree
 cpu: AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics
-BenchmarkBuild-16                     25      87032073 ns/op    55303609 B/op    1100618 allocs/op
-BenchmarkBuilderEverything-16         19     120479792 ns/op    71937872 B/op    1160737 allocs/op
-BenchmarkBuilderOneField-16          741       3048477 ns/op     3063405 B/op      40119 allocs/op
-BenchmarkBuilderOneEntry-16          772       3063339 ns/op     3065942 B/op      40173 allocs/op
+BenchmarkBuild-16                     14      78466597 ns/op    48262640 B/op    1020595 allocs/op
+BenchmarkBuilderEverything-16         10     105719619 ns/op    65220780 B/op    1090726 allocs/op
+BenchmarkBuilderOneField-16          535       2220158 ns/op     2661595 B/op      40109 allocs/op
+BenchmarkBuilderOneEntry-16          523       2222018 ns/op     2663679 B/op      40160 allocs/op
 ```
 
-A full build is 87 ms; a declared one-field build is 3 ms, and that is the
+A full build is 78 ms; a declared one-field build is 2 ms, and that is the
 whole point of the thing. Nothing outside the declared path is encoded, hashed
 or even looked at, so what remains is mostly the map's own tree object, which
 has ten thousand entries and has to be written again whenever any one of them
@@ -328,7 +328,7 @@ one field inside it.
 
 `BenchmarkBuilderEverything` is a Builder told nothing about what moved, and it
 is slower than a plain `Build` because it also records the index a later
-targeted build resolves against. That index is what the 3 ms is bought with.
+targeted build resolves against. That index is what the 2 ms is bought with.
 
 ### What it will not notice
 
@@ -459,13 +459,13 @@ goos: linux
 goarch: amd64
 pkg: github.com/zonque/treevial/objects
 cpu: AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics
-BenchmarkSelectSinceFromNothing-16      141       8453267 ns/op    13076848 B/op    537 allocs/op
-BenchmarkSelectSinceOneLeafMoved-16    2139        611399 ns/op         152 B/op      3 allocs/op
-BenchmarkEncodePackOneLeafMoved-16      262       4539733 ns/op     1076835 B/op     40 allocs/op
+BenchmarkSelectSinceFromNothing-16      141       8319922 ns/op    13071923 B/op    536 allocs/op
+BenchmarkSelectSinceOneLeafMoved-16    2274        545045 ns/op         152 B/op      3 allocs/op
+BenchmarkEncodePackOneLeafMoved-16      260       4493151 ns/op     1076835 B/op     40 allocs/op
 ```
 
-Working out that a one-field move owes a subscriber three objects takes 0.6 ms
-and three allocations, against the 8.5 ms it takes to work out that a
+Working out that a one-field move owes a subscriber three objects takes 0.5 ms
+and three allocations, against the 8.3 ms it takes to work out that a
 subscriber holding nothing owes the whole sixty thousand. The comparison is
 what buys that: establishing where the client stands costs nothing when the
 answer is written in the entry that led to the subtree, where collecting

@@ -72,7 +72,7 @@
 //
 // A [Builder] pays only for what changed. It keeps the tree it last built and
 // looks at nothing but the paths you declare, which on a map of ten thousand
-// entries is some thirty times cheaper than a full build — most of what is
+// entries is some thirty-five times cheaper than a full build — most of what is
 // left being the map's own tree object, which has to be written again whenever
 // any one of its entries moves. The benchmarks in bench_test.go are where that
 // figure comes from. The price is that it believes you: see [Builder] for what
